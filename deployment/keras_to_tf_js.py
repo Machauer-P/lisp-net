@@ -1,7 +1,24 @@
+import sys
+from unittest.mock import MagicMock
+
+# Mock tensorflow_decision_forests for Windows compatibility
+sys.modules["tensorflow_decision_forests"] = MagicMock()
+
+import numpy as np
+# Fix for NumPy 2.0+ compatibility with older tensorflowjs versions
+if not hasattr(np, "object"):
+    np.object = object
+if not hasattr(np, "bool"):
+    np.bool = bool
+
 import tensorflow as tf
 import tensorflowjs as tfjs
 import argparse
 import os
+
+# Ensure Keras 3 uses compatibility mode if needed, 
+# but for .keras files, we want to try native loading first.
+
 
 def export_model(input_model_path, output_tfjs_dir):
     if not os.path.exists(input_model_path):
