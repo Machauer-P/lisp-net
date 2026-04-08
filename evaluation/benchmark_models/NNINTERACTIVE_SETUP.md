@@ -19,8 +19,14 @@ It is recommended to use a dedicated virtual environment for `nnInteractive`.
 
 **On Windows (PowerShell):**
 ```powershell
-python -m venv venv
-.\venv\Scripts\activate
+python -m venv venv-nn
+.\venv-nn\Scripts\activate
+```
+
+**On Windows (Git Bash):**
+```bash
+python -m venv venv-nn
+source venv-nn/Scripts/activate
 ```
 
 **On Linux/macOS:**
@@ -42,7 +48,12 @@ Whenever you want to run evaluations using `nnInteractive`, simply navigate to i
 
 ```powershell
 cd evaluation/benchmark_models/nnInteractive
-.\venv\Scripts\activate
+
+# If using PowerShell
+.\venv-nn\Scripts\activate
+
+# If using Git Bash
+source venv-nn/Scripts/activate
 ```
 
 ## Troubleshooting

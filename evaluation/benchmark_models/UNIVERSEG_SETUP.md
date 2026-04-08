@@ -23,7 +23,7 @@ It is recommended to use a dedicated virtual environment for `UniverSeg`.
 **On Windows (PowerShell):**
 
 ```powershell
-python -m venv venv
+python -m venv venv-univer
 .\venv\Scripts\activate
 ```
 
@@ -50,7 +50,12 @@ Whenever you want to run evaluations using `UniverSeg`, simply navigate to its d
 
 ```powershell
 cd evaluation/benchmark_models/UniverSeg
-.\venv\Scripts\activate
+
+# If using PowerShell
+.\venv-univer\Scripts\activate
+
+# If using Git Bash
+source venv-univer/Scripts/activate
 ```
 
 ## Troubleshooting
