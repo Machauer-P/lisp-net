@@ -1,19 +1,19 @@
 let model;
 const IMG_SIZE = 128;
 
+// GraphModel input tensor names (from model signature)
+const QUERY_INPUT = 'inputs:0';   // shape [?, 128, 128, 1]
+const PROMPT_INPUT = 'inputs_1:0'; // shape [?, 128, 128, 2]
+
 async function runDummyTest() {
     console.log("Running Dummy Test...");
     tf.tidy(() => {
-        // 1. Create dummy tensors
         const dummyQuery = tf.zeros([1, 128, 128, 1]);
         const dummyPrompt = tf.zeros([1, 128, 128, 2]);
 
-        const queryInputName = model.inputs.find(i => i.shape[3] === 1).name;
-        const promptInputName = model.inputs.find(i => i.shape[3] === 2).name;
-
         const inputs = {};
-        inputs[queryInputName] = dummyQuery;
-        inputs[promptInputName] = dummyPrompt;
+        inputs[QUERY_INPUT] = dummyQuery;
+        inputs[PROMPT_INPUT] = dummyPrompt;
 
         const result = model.execute(inputs);
         console.log("Dummy test success! Output shape:", result.shape);
@@ -33,8 +33,8 @@ function updateStatus(isReady) {
 
 async function init() {
     try {
-        // Load model (Make sure to specify correct path if tfjs export changed!)
-        model = await tf.loadGraphModel('./p_unet_272_tfjs/model.json');
+        // Load model as GraphModel (exported via SavedModel bridge)
+        model = await tf.loadGraphModel('./p_unet_282_tfjs/model.json');
         console.log("Model loaded successfully.");
 
         await runDummyTest();
@@ -92,16 +92,15 @@ document.getElementById('predictBtn').onclick = async () => {
             return { promptTensor: pTensor, queryTensor: qTensor };
         });
 
-        const queryInputName = model.inputs.find(i => i.shape[3] === 1).name;
-        const promptInputName = model.inputs.find(i => i.shape[3] === 2).name;
-
         const inputDict = {};
-        inputDict[promptInputName] = promptTensor;
-        inputDict[queryInputName] = queryTensor;
+        inputDict[QUERY_INPUT] = queryTensor;
+        inputDict[PROMPT_INPUT] = promptTensor;
 
         // --- INFERENCE AND BENCHMARKING ---
         const t0 = performance.now();
-        const prediction = model.execute(inputDict);
+        // GraphModel uses execute(), and output may be float16 so cast to float32
+        let prediction = model.execute(inputDict);
+        prediction = prediction.cast('float32');
 
         // Wait for WebGL logic to sync if necessary via dataSync
         prediction.dataSync();
