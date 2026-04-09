@@ -13,7 +13,6 @@ from pathlib import Path
 from data.DataLoader_npz import DataLoader_npz
 from data.DataGenerator import DataGenerator
 
-from utils.augmentations import PromptUNetAugmenter
 from utils.visualization import visualize_a_few_results
 from utils.metrics import dice_score_tf
 from utils.preprocessing import shaping
@@ -22,7 +21,7 @@ from utils.preprocessing import shaping
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 class PromptUNetTester:
-    def __init__(self, dataset_path, models_dir, augmentations=None, max_data_points=1000):
+    def __init__(self, dataset_path, models_dir, max_data_points=1000):
         # Resolve dataset_path relative to root if needed
         if isinstance(dataset_path, str):
             dataset_path = [dataset_path]
@@ -34,32 +33,47 @@ class PromptUNetTester:
             self.models_dir = str((PROJECT_ROOT / models_dir).resolve())
         else:
             self.models_dir = models_dir
-        self.augmentations = augmentations if augmentations is not None else []
         self.max_data_points = max_data_points
 
 
+    @tf.function
+    def _test_step(self, loaded_model, x, y, p, threshold):
+        """
+        Graph-compiled prediction step for performance.
+        Using model(inputs, training=False) is faster than model.predict() in a loop.
+        """
+        # Ensure proper shapes inside the graph
+        x_shaped = shaping(x)
+        p_shaped = shaping(p)
+        
+        # Inference (taking the first batch element from shaping)
+        pred = loaded_model([x_shaped[0:1, :, :, 0:1], p_shaped[0:1, ...]], training=False)
+
+        # Thresholding
+        pred = tf.where(pred < threshold, 0.0, 1.0)
+        
+        # Calculate metric
+        return dice_score_tf(y[..., 0:1], pred)
+
     def test_routine(self, model_name: str, loaded_model: tf.keras.Model, ds, offset, threshold=0.45):
         start = time.time()
-        total_dice = 0
-        len_ds = len(list(ds.as_numpy_iterator()))
+        total_dice = 0.0
+        count = 0
 
-        for e, (x, y, p) in enumerate(ds):
-            
-            x = shaping(x)
-            p = shaping(p)
-                
-            pred = loaded_model.predict([x[0:1, :, :, 0:1], p[0:1, ...]], verbose=0)
+        print(f"Testing {model_name}... ", end="", flush=True)
 
-            pred = tf.where(pred < threshold, 0.0, pred)
-            pred = tf.where(pred >= threshold, 1.0, pred)
-            current_dice = dice_score_tf(y[..., 0:1], pred)
+        for x, y, p in ds:
+            current_dice = self._test_step(loaded_model, x, y, p, threshold)
             total_dice += current_dice
+            count += 1
 
         end = time.time()
-        print()
-        print(f'Testing for {model_name} took {round(end - start, 0)} seconds')
+        avg_dice = (total_dice / count).numpy() if count > 0 else 0.0
 
-        return (total_dice / len_ds).numpy()
+        print(f"Done. Took {round(end - start, 1)} seconds.")
+
+        return avg_dice
+
 
     def run_pipeline(self, dimensions, offsets, models, threshold=0.45, max_number_labels=10, cropping=False, min_crop_size=0.5, cropping_composition=1, num_visualize=0):
         results = {}
@@ -83,10 +97,6 @@ class PromptUNetTester:
                 min_crop_size=min_crop_size, 
                 cropping_composition=cropping_composition
             )
-            
-            if self.augmentations:
-                augmenter = PromptUNetAugmenter(test_ds, self.augmentations)
-                test_ds = augmenter.process()
             
             # Cache for visualizations to avoid reloading models twice
             model_cache = []

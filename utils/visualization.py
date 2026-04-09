@@ -67,8 +67,7 @@ def plot_result(x, y, p, pred, offset, pred_titel='', contrast=1):
     plt.show()
 
 def visualize_a_few_results(model_name:str, loaded_model: tf.keras.Model, ds, offset, img_to_plot=8, threshold=0.45, contrast=1):
-    from utils.Helpers import Helpers
-    helpers = Helpers()
+    from utils.metrics import dice_score_tf
     for i, (x,y,p) in enumerate(ds):
         if i == img_to_plot:
             break
@@ -81,7 +80,7 @@ def visualize_a_few_results(model_name:str, loaded_model: tf.keras.Model, ds, of
 
         plot_result(x,y,p,pred,offset[i],f'Prediction (Number {str(i)})', contrast)
         y = tf.cast(y, tf.float32)
-        print(f"Dice: {helpers.dice_score_tf(y[..., 0:1], pred):.3f}\n")
+        print(f"Dice: {dice_score_tf(y[..., 0:1], pred):.3f}\n")
 
 def plot_random_slice_from_vol(dataset, num_examples=9):
     """
