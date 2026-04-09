@@ -155,40 +155,58 @@ class DataGenerator():
     def _process_dimension(self, x, y, d, offset, max_number_labels, x_new, y_new, prompt, offset_list, slices_added, max_data_points):
         slices_added_per_pid = 0
         
+        # 1. Determine fully available Tasks globally for this patient
         if isinstance(y, list):
             y_shape = y[0].shape['xyz'.index(d)]   
+            valid_tasks = list(range(1, len(y) + 1))
         else:
             y_shape = y.shape['xyz'.index(d)]
+            y_flat = tf.reshape(y, [-1])
+            valid_tasks_tensor, _ = tf.unique(y_flat)
+            valid_tasks = valid_tasks_tensor.numpy().tolist()
+            if 0 in valid_tasks:
+                valid_tasks.remove(0)
+                
+        # If no identifiable tasks exist at all in the scan, skip it.
+        if not valid_tasks:
+            return slices_added
+
+        failed_searches = 0
+        
+        # 2. Iterate dynamically until we satisfy requested generated points
+        while slices_added_per_pid < 150 and slices_added < max_data_points and failed_searches < 100:
             
-        slice_indices = list(range(y_shape))
-        random.shuffle(slice_indices)
+            # Step A: Pick primary task uniformly across all tasks
+            primary_task = random.choice(valid_tasks)
+            
+            # Step B: Pick slices dynamically until we find one containing it
+            slice_indices = list(range(y_shape))
+            random.shuffle(slice_indices)
 
-        for i in slice_indices:
-            # Change the inital volumes where data is generated from every 150 steps. So data is better mixed!
-            if slices_added_per_pid >= 150:
-                break
+            found_slice = False
+            for i in slice_indices:
+                r = self._sample_offset(i, offset, y_shape)
+                if r is None:
+                    continue
 
-            if slices_added >= max_data_points:
-                break
+                result = self._create_single_datapoint(
+                    x, y, i, r, d, max_number_labels, primary_task
+                )
 
-            r = self._sample_offset(i, offset, y_shape)
-            if r is None:
-                continue
+                if result is not None:
+                    x2d, y2d, p = result
+                    x_new.append(x2d)
+                    y_new.append(y2d)
+                    prompt.append(p)
+                    offset_list.append(r)
+                    slices_added += 1
+                    slices_added_per_pid += 1
+                    found_slice = True
+                    failed_searches = 0
+                    break # Break slice hunt to loop & pick a new randomized task
 
-            result = self._create_single_datapoint(
-                x, y, i, r, d, max_number_labels
-            )
-
-            if result is None:  # no label found
-                continue
-
-            x2d, y2d, p = result
-            x_new.append(x2d)
-            y_new.append(y2d)
-            prompt.append(p)
-            offset_list.append(r)
-            slices_added += 1
-            slices_added_per_pid += 1
+            if not found_slice:
+                failed_searches += 1
 
         return slices_added
     
@@ -200,7 +218,7 @@ class DataGenerator():
             return None
         return r
     
-    def _create_single_datapoint(self, x, y, i, r, d, max_number_labels):
+    def _create_single_datapoint(self, x, y, i, r, d, max_number_labels, primary_task=None):
         # multiple segmentations = list case
         if isinstance(y, list):
             y_2d = [self._get_2d_data(seg, i, d) for seg in y]
@@ -210,7 +228,7 @@ class DataGenerator():
             y_2d_r = self._get_2d_data(y, i+r, d)
 
 
-        labels, labels_r = self._select_valid_labels(y_2d, y_2d_r, max_number_labels)
+        labels, labels_r = self._select_valid_labels(y_2d, y_2d_r, max_number_labels, primary_task)
         if labels is None:
             return None
 
@@ -227,19 +245,19 @@ class DataGenerator():
         p = tf.concat([x_2d_r, total_label_r], axis=-1)
         return x_2d, total_label, p
     
-    def _select_valid_labels(self, y_2d, y_2d_r, max_number_labels):
+    def _select_valid_labels(self, y_2d, y_2d_r, max_number_labels, primary_task):
         """
         Modified version:
         Case 1: Multi-segmentation list. Binarizes inputs (0 vs >0). 
-                Collects all valid channels, shuffles, picks 'count'.
-        Case 2: Single segmentation volume. Filters unique INTs, removes 0, 
-                shuffles, picks 'count'.
+        Case 2: Single segmentation volume. Filters unique INTs, removes 0.
+        
+        Anchors on primary_task: if it is missing, returns None. 
+        If present, fetches secondary tasks organically up to count.
         """
         with tf.device('/CPU:0'):
             count = random.randint(1, max_number_labels)
             labels_out, labels_r_out = [], []
 
-            # ---------------- PRE-PROCESSING ----------------
             # Determine if we are truly in "Multi-Channel List" mode or "Single Volume" mode
             is_multi_channel_list = False
 
@@ -252,71 +270,83 @@ class DataGenerator():
                     y_2d_r = y_2d_r[0]
                     is_multi_channel_list = False
                 else:
-                    # Empty list
                     return None, None
 
             # ---------------- CASE 1: List of Multiple Channels ----------------
-            # (e.g. [TumorMask, EdemaMask]). We binarize each channel.
             if is_multi_channel_list:
-                candidate_indices = []
-
-                for idx, (seg, seg_r) in enumerate(zip(y_2d, y_2d_r)):
-                    # Binarize: treat everything > 0 as the region
-                    s1 = tf.where(seg > 0, 1, 0)
-                    s2 = tf.where(seg_r > 0, 1, 0)
-
-                    nz1 = tf.math.count_nonzero(s1)
-                    nz2 = tf.math.count_nonzero(s2)
-
-                    if nz1 >= self.minimum_pixel and nz2 >= self.minimum_pixel:
-                        candidate_indices.append(idx)
-
-                random.shuffle(candidate_indices)
-                selected_indices = candidate_indices[:count]
-
-                for idx in selected_indices:
-                    l = tf.where(y_2d[idx] > 0, 1, 0)
-                    l_r = tf.where(y_2d_r[idx] > 0, 1, 0)
-                    labels_out.append(l)
-                    labels_r_out.append(l_r)
+                
+                # Check for primary_task (1-indexed map to idx)
+                if primary_task is not None:
+                    idx = primary_task - 1
+                    s1 = tf.where(y_2d[idx] > 0, 1, 0)
+                    s2 = tf.where(y_2d_r[idx] > 0, 1, 0)
+                    
+                    if tf.math.count_nonzero(s1) < self.minimum_pixel or tf.math.count_nonzero(s2) < self.minimum_pixel:
+                        return None, None
+                        
+                    labels_out.append(s1)
+                    labels_r_out.append(s2)
+                    
+                    if count > 1:
+                        # Extract secondary tasks naturally occurring in this slice
+                        other_indices = []
+                        for other_idx, (seg, seg_r) in enumerate(zip(y_2d, y_2d_r)):
+                            if other_idx == idx: continue
+                            s1_o = tf.where(seg > 0, 1, 0)
+                            s2_o = tf.where(seg_r > 0, 1, 0)
+                            if tf.math.count_nonzero(s1_o) >= self.minimum_pixel and tf.math.count_nonzero(s2_o) >= self.minimum_pixel:
+                                other_indices.append(other_idx)
+                        random.shuffle(other_indices)
+                        
+                        for c_idx in other_indices[:count - 1]:
+                            l = tf.where(y_2d[c_idx] > 0, 1, 0)
+                            l_r = tf.where(y_2d_r[c_idx] > 0, 1, 0)
+                            labels_out.append(l)
+                            labels_r_out.append(l_r)
 
             # ---------------- CASE 2: Single Volume (Multi-Label Integers) ----------------
-            # (e.g. One volume with 1=Liver, 2=Kidney). We pick specific integers.
             else: 
-                y1_flat = tf.reshape(y_2d, [-1])
-                y2_flat = tf.reshape(y_2d_r, [-1])
-
-                # Get unique values present in the slices
-                valid_1, _ = tf.unique(y1_flat)
-                valid_2, _ = tf.unique(y2_flat)
-
-                # Use sets to handle intersection and removal cleanly
-                set_1 = set(valid_1.numpy())
-                set_2 = set(valid_2.numpy())
-
-                # CRITICAL: Remove Background (0)
-                set_1.discard(0) 
-                set_2.discard(0)
-
-                # Find labels visible in BOTH slices
-                candidates = list(set_2.intersection(set_1))
-                random.shuffle(candidates)
-
-                for label_val in candidates:
-                    # Create mask for ONLY this specific integer label
-                    label = tf.where(y_2d == label_val, 1, 0)
-                    label_r = tf.where(y_2d_r == label_val, 1, 0)
-
-                    # Check pixel threshold
-                    if (tf.math.count_nonzero(label) < self.minimum_pixel or 
-                        tf.math.count_nonzero(label_r) < self.minimum_pixel):
-                        continue
-
+                if primary_task is not None:
+                    # Create mask for primary task
+                    label = tf.where(y_2d == primary_task, 1, 0)
+                    label_r = tf.where(y_2d_r == primary_task, 1, 0)
+                    if tf.math.count_nonzero(label) < self.minimum_pixel or tf.math.count_nonzero(label_r) < self.minimum_pixel:
+                        return None, None
+                        
                     labels_out.append(label)
                     labels_r_out.append(label_r)
+                    
+                    if count > 1:
+                        y1_flat = tf.reshape(y_2d, [-1])
+                        y2_flat = tf.reshape(y_2d_r, [-1])
 
-                    if len(labels_out) == count:
-                        break
+                        valid_1, _ = tf.unique(y1_flat)
+                        valid_2, _ = tf.unique(y2_flat)
+
+                        set_1 = set(valid_1.numpy())
+                        set_2 = set(valid_2.numpy())
+
+                        set_1.discard(0) 
+                        set_2.discard(0)
+                        set_1.discard(primary_task)
+                        set_2.discard(primary_task)
+
+                        candidates = list(set_2.intersection(set_1))
+                        random.shuffle(candidates)
+
+                        for label_val in candidates:
+                            l = tf.where(y_2d == label_val, 1, 0)
+                            l_r = tf.where(y_2d_r == label_val, 1, 0)
+
+                            if (tf.math.count_nonzero(l) < self.minimum_pixel or 
+                                tf.math.count_nonzero(l_r) < self.minimum_pixel):
+                                continue
+
+                            labels_out.append(l)
+                            labels_r_out.append(l_r)
+
+                            if len(labels_out) == count:
+                                break
 
             # ---------------- FINAL RETURN ----------------
             if len(labels_out) == 0:
@@ -350,6 +380,11 @@ class DataGenerator():
 
                 current_dict = self.dataloader.dataset[id]
                 x, y = self._prepare_volume(current_dict, cropping, min_crop_size)
+                
+                # Unwrap single-element list to treat as a single multi-label volume
+                if isinstance(y, list) and len(y) == 1:
+                    y = y[0]
+                    
                 random.shuffle(dimensions)
 
                 for d in dimensions:
@@ -430,30 +465,32 @@ class DataGenerator():
                     if r is None:
                         continue
 
-                    if isinstance(y, list):
-                        if task == 0:
+                    if task == 0:
+                        if isinstance(y, list):
                             task = random.randint(1, len(y))
+                        else:
+                            y_flat = tf.reshape(y, [-1])
+                            valid_tasks, _ = tf.unique(y_flat)
+                            valid_tasks = valid_tasks.numpy().tolist()
+                            if 0 in valid_tasks:
+                                valid_tasks.remove(0)
+                            if len(valid_tasks) == 0:
+                                continue
+                            task = random.choice(valid_tasks)
+                        print(f'Current task: {task}')
+
+                    if isinstance(y, list):
                         y_2d = self._get_2d_data(y[task-1], i, d)
                         y_2d_r = self._get_2d_data(y[task-1], i + r, d)
                     else:
                         y_2d = self._get_2d_data(y, i, d)
                         y_2d_r = self._get_2d_data(y, i + r, d)
 
-                    # Task label selection
+                    # Task label verification check
                     y1 = tf.reshape(y_2d, (-1,))
                     y2 = tf.reshape(y_2d_r, (-1,))
                     valid_labels, _ = tf.unique(y1)
                     valid_labels_r, _ = tf.unique(y2)
-
-                    num_valid_labels_r = len(valid_labels_r)
-                    rand = list(range(1, num_valid_labels_r))
-                    random.shuffle(rand)
-
-                    if task == 0:
-                        if len(rand) == 0:
-                            continue
-                        task = valid_labels_r[rand[0]]
-                        print(f'Current task: {task}')
 
                     if isinstance(y, list):
                          # For binary masks in a list, we usually look for value 1

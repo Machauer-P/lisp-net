@@ -3,6 +3,7 @@ __pycache__/
 
 # Data
 data/test_data/HanSeg/
+data/test_data/2d/
 
 # Augm test results
 utils/results/
