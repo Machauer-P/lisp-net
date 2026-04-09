@@ -410,7 +410,14 @@ class DataGenerator():
                 current_dict = self.dataloader.dataset[id]
                 x, y = self._prepare_volume(current_dict, cropping, min_crop_size)
 
-                y_shape = y.shape['xyz'.index(d)]
+                # Unwrap single-element list to treat as a single multi-label volume
+                if isinstance(y, list) and len(y) == 1:
+                    y = y[0]
+
+                if isinstance(y, list):
+                    y_shape = y[0].shape['xyz'.index(d)]
+                else:
+                    y_shape = y.shape['xyz'.index(d)]
                 iter_2d = tf.range(y_shape)
                 tf.random.shuffle(iter_2d)
 
@@ -423,8 +430,14 @@ class DataGenerator():
                     if r is None:
                         continue
 
-                    y_2d = self._get_2d_data(y, i, d)
-                    y_2d_r = self._get_2d_data(y, i + r, d)
+                    if isinstance(y, list):
+                        if task == 0:
+                            task = random.randint(1, len(y))
+                        y_2d = self._get_2d_data(y[task-1], i, d)
+                        y_2d_r = self._get_2d_data(y[task-1], i + r, d)
+                    else:
+                        y_2d = self._get_2d_data(y, i, d)
+                        y_2d_r = self._get_2d_data(y, i + r, d)
 
                     # Task label selection
                     y1 = tf.reshape(y_2d, (-1,))
@@ -442,11 +455,15 @@ class DataGenerator():
                         task = valid_labels_r[rand[0]]
                         print(f'Current task: {task}')
 
-                    if task not in valid_labels or task not in valid_labels_r:
-                        continue
-
-                    label = tf.where(y_2d == task, 1, 0)
-                    label_r = tf.where(y_2d_r == task, 1, 0)
+                    if isinstance(y, list):
+                         # For binary masks in a list, we usually look for value 1
+                         label = tf.where(y_2d > 0, 1, 0)
+                         label_r = tf.where(y_2d_r > 0, 1, 0)
+                    else:
+                        if task not in valid_labels or task not in valid_labels_r:
+                            continue
+                        label = tf.where(y_2d == task, 1, 0)
+                        label_r = tf.where(y_2d_r == task, 1, 0)
 
                     if (tf.math.count_nonzero(label) < self.minimum_pixel or
                         tf.math.count_nonzero(label_r) < self.minimum_pixel):
