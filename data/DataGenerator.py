@@ -418,66 +418,73 @@ class DataGenerator():
         offset_list = []
         x_new, y_new, prompt = [], [], []
         slices_added = 0
-        step_counter = 0
         task = 0
 
-        random.shuffle(self.dataloader.current_ids)
-        random.shuffle(dimensions)
-        d = dimensions[0]
+        d = random.choice(dimensions)
 
         while slices_added < max_data_points:
 
-            if step_counter >= 400:
-                # Reset everything if took too long
-                task = 0
-                step_counter = 0
-                slices_added = 0
-                offset_list.clear()
-                x_new.clear()
-                y_new.clear()
-                prompt.clear()
-                print("Changed the task, because it took too long.")
+            if task == 0:
+                # Pick a valid task globally from a random patient
+                random.shuffle(self.dataloader.current_ids)
+                for id in self.dataloader.current_ids:
+                    current_dict = self.dataloader.dataset[id]
+                    y = current_dict['segmentations']
+                    if isinstance(y, list) and len(y) == 1: y = y[0]
 
+                    if isinstance(y, list):
+                        task = random.randint(1, len(y))
+                        break
+                    else:
+                        y_flat = tf.reshape(y, [-1])
+                        valid_tasks, _ = tf.unique(y_flat)
+                        valid_tasks = valid_tasks.numpy().tolist()
+                        if 0 in valid_tasks: valid_tasks.remove(0)
+                        if len(valid_tasks) > 0:
+                            task = random.choice(valid_tasks)
+                            break
+                print(f'Current task (Global): {task}')
+                step_counter = 0
+
+            # Iterate over ALL patients for this specific task
+            random.shuffle(self.dataloader.current_ids)
             for id in self.dataloader.current_ids:
                 if slices_added >= max_data_points:
                     break
+                    
+                if step_counter >= max_data_points * 20:
+                    break # Give up if task is extremely sparse
 
                 current_dict = self.dataloader.dataset[id]
                 x, y = self._prepare_volume(current_dict, cropping, min_crop_size)
-
-                # Unwrap single-element list to treat as a single multi-label volume
                 if isinstance(y, list) and len(y) == 1:
                     y = y[0]
 
+                # Pre-check if patient actually has the desired task
                 if isinstance(y, list):
-                    y_shape = y[0].shape['xyz'.index(d)]
+                    if tf.math.count_nonzero(y[task-1]) == 0:
+                        continue
+                    y_shape = y[task-1].shape['xyz'.index(d)]
                 else:
+                    y_flat = tf.reshape(y, [-1])
+                    valid_tasks, _ = tf.unique(y_flat)
+                    valid_tasks = valid_tasks.numpy().tolist()
+                    if task not in valid_tasks:
+                        continue
                     y_shape = y.shape['xyz'.index(d)]
+
                 iter_2d = tf.range(y_shape)
                 tf.random.shuffle(iter_2d)
 
                 for i in iter_2d:
-                    step_counter += 1
                     if slices_added >= max_data_points:
                         break
+                        
+                    step_counter += 1
 
                     r = self._sample_offset(i, offset, y_shape)
                     if r is None:
                         continue
-
-                    if task == 0:
-                        if isinstance(y, list):
-                            task = random.randint(1, len(y))
-                        else:
-                            y_flat = tf.reshape(y, [-1])
-                            valid_tasks, _ = tf.unique(y_flat)
-                            valid_tasks = valid_tasks.numpy().tolist()
-                            if 0 in valid_tasks:
-                                valid_tasks.remove(0)
-                            if len(valid_tasks) == 0:
-                                continue
-                            task = random.choice(valid_tasks)
-                        print(f'Current task: {task}')
 
                     if isinstance(y, list):
                         y_2d = self._get_2d_data(y[task-1], i, d)
@@ -487,20 +494,12 @@ class DataGenerator():
                         y_2d_r = self._get_2d_data(y, i + r, d)
 
                     # Task label verification check
-                    y1 = tf.reshape(y_2d, (-1,))
-                    y2 = tf.reshape(y_2d_r, (-1,))
-                    valid_labels, _ = tf.unique(y1)
-                    valid_labels_r, _ = tf.unique(y2)
-
                     if isinstance(y, list):
-                         # For binary masks in a list, we usually look for value 1
                          label = tf.where(y_2d > 0, 1, 0)
                          label_r = tf.where(y_2d_r > 0, 1, 0)
                     else:
-                        if task not in valid_labels or task not in valid_labels_r:
-                            continue
-                        label = tf.where(y_2d == task, 1, 0)
-                        label_r = tf.where(y_2d_r == task, 1, 0)
+                         label = tf.where(y_2d == task, 1, 0)
+                         label_r = tf.where(y_2d_r == task, 1, 0)
 
                     if (tf.math.count_nonzero(label) < self.minimum_pixel or
                         tf.math.count_nonzero(label_r) < self.minimum_pixel):
@@ -523,6 +522,19 @@ class DataGenerator():
                     offset_list.append(r)
                     slices_added += 1
 
+            if slices_added < max_data_points:
+                if slices_added >= 32:
+                    print(f"Task exhausted, but collected {slices_added} data points. Proceeding with dataset.")
+                    break
+
+                print("Changed the task, because it was exhausted across all patients.")
+                task = 0
+                slices_added = 0
+                offset_list.clear() # Clearing correctly since it's a list
+                x_new.clear()
+                y_new.clear()
+                prompt.clear()
+
         # Shuffle / stack
         x_new, y_new, prompt, offset_list = self._randomnizer(
             x_new, y_new, prompt, offset_list, dimensions
@@ -530,9 +542,6 @@ class DataGenerator():
         ds = tf.data.Dataset.from_tensor_slices((
             tf.stack(x_new), tf.stack(y_new), tf.stack(prompt)
         ))
-
-        # Clean up
-        x_new, y_new, prompt = [], [], []
 
         print(f'It took {(time.time() - start):.0f} seconds')
         return ds, offset_list
