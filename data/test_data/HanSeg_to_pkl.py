@@ -1,7 +1,7 @@
 """
 HanSeg_to_pkl.py
 ================
-Unified CT / MRI → pickle pipeline using class inheritance.
+Unified CT / MRI → .npz pipeline using class inheritance.
 
 Usage:
     python HanSeg_to_pkl.py ct  --data-dir HanSeg/set_1 --output HanSeg_CT
@@ -10,7 +10,15 @@ Usage:
 
 import os
 import glob
-import pickle
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path so utils.ds_handler can be imported
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from utils.ds_handler import save_dataset as _save_dataset_npz
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
@@ -278,11 +286,8 @@ class BaseProcessor:
 
     @staticmethod
     def save_dataset(dataset: dict, filename: str):
-        out = filename if filename.endswith(".pkl") else filename + ".pkl"
-        print(f"\nSaving dataset to {out} ...")
-        with open(out, "wb") as f:
-            pickle.dump(dataset, f)
-        print("Save complete!")
+        """Save a dataset dict as a compressed .npz file."""
+        _save_dataset_npz(dataset, filename)
 
     # ------------------------------------------------------------------
     # Hook – must be implemented by subclass
@@ -485,7 +490,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="HanSeg → pickle converter (CT or MRI)"
+        description="HanSeg → .npz converter (CT or MRI)"
     )
     parser.add_argument(
         "modality", choices=["ct", "mri"], help="Which modality to process"

@@ -11,7 +11,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from pathlib import Path
 from utils.Helpers import Helpers
-from data.DataLoader_pkl import DataLoader_pkl
+from data.DataLoader_npz import DataLoader_npz
 from data.DataGenerator import DataGenerator
 from utils.augmentations import PromptUNetAugmenter
 from utils.visualization import plot_result, visualize_a_few_results
@@ -63,8 +63,8 @@ class PromptUNetTester:
     def run_pipeline(self, dimensions, offsets, models, threshold=0.45, max_number_labels=10, cropping=False, min_crop_size=0.5, cropping_composition=1, num_visualize=0):
         results = {}
         
-        # Initialize DataLoader_pkl and DataGenerator
-        dataloader = DataLoader_pkl(self.dataset_path, val_size=0.0)
+        # Initialize DataLoader_npz and DataGenerator
+        dataloader = DataLoader_npz(self.dataset_path, val_size=0.0)
         datagenerator = DataGenerator(dataloader)
         
         for off in offsets:

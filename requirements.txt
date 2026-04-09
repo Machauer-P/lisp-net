@@ -1,0 +1,13 @@
+# Core ML and Data processing
+tensorflow>=2.15.0
+tensorflowjs>=4.17.0
+numpy>=1.23.5
+scipy>=1.11.4
+pandas>=2.1.4
+
+# Visualization and Utilities
+matplotlib>=3.8.2
+tqdm>=4.66.1
+
+# Notebook support
+ipykernel>=6.28.0

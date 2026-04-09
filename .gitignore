@@ -15,5 +15,7 @@ utils/results/
 # Subfolder for deployment contain the tfjs models
 deployment/*/ 
 
+.venv/
+
 # Optional: IDE/editor stuff
 .vscode/

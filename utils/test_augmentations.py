@@ -33,7 +33,7 @@ sys.path.insert(0, str(root_dir))
 
 from utils.augmentations import PromptUNetAugmenter
 from data.DataGenerator import DataGenerator
-from data.DataLoader_pkl import DataLoader_pkl
+from data.DataLoader_npz import DataLoader_npz
 
 def print_statistics(name, tensor, file=None):
     """Prints tensor statistics to console and optionally to a file."""
@@ -90,9 +90,9 @@ def main():
     augmenter = PromptUNetAugmenter(**probs)
     
     modalities = ["CT", "MRI"]
-    pkl_files = {
-        "CT": "data/test_data/HanSeg_CT.pkl",
-        "MRI": "data/test_data/HanSeg_MRI.pkl"
+    npz_files = {
+        "CT": "data/test_data/HanSeg_CT.npz",
+        "MRI": "data/test_data/HanSeg_MRI.npz"
     }
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -103,10 +103,10 @@ def main():
         stats_file_path = os.path.join(args.output_dir, f"stats_{mod}.txt")
         
         print(f"\n{'='*20} Processing {mod} {'='*20}")
-        print(f"Loading {pkl_files[mod]}...")
+        print(f"Loading {npz_files[mod]}...")
         
         # Init dataloader
-        dataloader = DataLoader_pkl([pkl_files[mod]], val_size=0.0, max_img=args.num_samples)
+        dataloader = DataLoader_npz([npz_files[mod]], val_size=0.0, max_img=args.num_samples)
         datagenerator = DataGenerator(dataloader)
         
         ds, _ = datagenerator.get_data_points(
