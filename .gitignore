@@ -10,6 +10,7 @@ utils/results/
 # Large files
 *.zip
 *.pkl
+*.npz
 *.keras
 
 # Subfolder for deployment contain the tfjs models

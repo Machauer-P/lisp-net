@@ -1,11 +1,11 @@
 """
-HanSeg_to_pkl.py
+HanSeg_to_npz.py
 ================
 Unified CT / MRI → .npz pipeline using class inheritance.
 
 Usage:
-    python HanSeg_to_pkl.py ct  --data-dir HanSeg/set_1 --output HanSeg_CT
-    python HanSeg_to_pkl.py mri --data-dir HanSeg/set_1 --output HanSeg_MRI
+    python HanSeg_to_npz.py ct  --data-dir HanSeg/set_1 --output HanSeg_CT
+    python HanSeg_to_npz.py mri --data-dir HanSeg/set_1 --output HanSeg_MRI
 """
 
 import os
