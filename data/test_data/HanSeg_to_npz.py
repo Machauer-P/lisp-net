@@ -18,7 +18,7 @@ _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from utils.ds_handler import save_dataset as _save_dataset_npz
+from data.test_data.ds_handler import save_dataset as _save_dataset_npz
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
