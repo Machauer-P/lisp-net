@@ -10,11 +10,13 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from pathlib import Path
-from utils.Helpers import Helpers
 from data.DataLoader_npz import DataLoader_npz
 from data.DataGenerator import DataGenerator
+
 from utils.augmentations import PromptUNetAugmenter
-from utils.visualization import plot_result, visualize_a_few_results
+from utils.visualization import visualize_a_few_results
+from utils.metrics import dice_score_tf
+from utils.preprocessing import shaping
 
 # Calculate project root (assuming script is in evaluation/eval_prompt_unet/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -34,7 +36,6 @@ class PromptUNetTester:
             self.models_dir = models_dir
         self.augmentations = augmentations if augmentations is not None else []
         self.max_data_points = max_data_points
-        self.helpers = Helpers()
 
 
     def test_routine(self, model_name: str, loaded_model: tf.keras.Model, ds, offset, threshold=0.45):
@@ -44,14 +45,14 @@ class PromptUNetTester:
 
         for e, (x, y, p) in enumerate(ds):
             
-            x = self.helpers.shaping(x)
-            p = self.helpers.shaping(p)
+            x = shaping(x)
+            p = shaping(p)
                 
             pred = loaded_model.predict([x[0:1, :, :, 0:1], p[0:1, ...]], verbose=0)
 
             pred = tf.where(pred < threshold, 0.0, pred)
             pred = tf.where(pred >= threshold, 1.0, pred)
-            current_dice = self.helpers.dice_score_tf(y[..., 0:1], pred)
+            current_dice = dice_score_tf(y[..., 0:1], pred)
             total_dice += current_dice
 
         end = time.time()

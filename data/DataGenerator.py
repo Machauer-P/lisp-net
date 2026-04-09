@@ -4,8 +4,7 @@ import time
 
 import tensorflow as tf
 
-from utils.Helpers import Helpers
-Helpers = Helpers()
+from utils.preprocessing import min_max_norm
 
 
 class DataGenerator():
@@ -51,8 +50,8 @@ class DataGenerator():
         total_label = tf.expand_dims(total_label, axis=-1)
 
         # Normalization between 0 and 1. Segm. and Prompt segm. are already binary
-        x_2d = Helpers.min_max_norm(x_2d)
-        x_2d_r = Helpers.min_max_norm(x_2d_r)
+        x_2d = min_max_norm(x_2d)
+        x_2d_r = min_max_norm(x_2d_r)
         
         x_2d = tf.cast(x_2d, tf.float32)
         x_2d_r = tf.cast(x_2d_r, tf.float32)
