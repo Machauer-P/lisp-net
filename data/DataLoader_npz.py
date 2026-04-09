@@ -2,7 +2,7 @@ from data.DataLoader import DataLoader
 import os
 import numpy as np
 
-from utils.ds_handler import load_dataset
+from data.test_data.ds_handler import load_dataset
 
 class DataLoader_npz(DataLoader):
     """
