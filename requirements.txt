@@ -1,15 +1,21 @@
 # Core ML and Data processing
-tensorflow>=2.15.0
-tensorflowjs>=4.17.0
-numpy>=1.23.5
-scipy>=1.11.4
-pandas>=2.1.4
-tensorflow_probability>=0.25.0
-nibabel>=5.4.2
+tensorflow==2.21.0
+tensorflowjs==4.22.0
+numpy==2.2.6
+scipy==1.15.3
+pandas==2.2.3
+tensorflow_probability==0.25.0
+nibabel==5.4.2
+simpleitk==2.5.3
 
 # Visualization and Utilities
-matplotlib>=3.8.2
-tqdm>=4.66.1
+matplotlib==3.10.8
 
 # Notebook support
-ipykernel>=6.28.0
+ipykernel==7.2.0
+
+# Only needed for Benchmark against UniverSeg and nnInteractive
+# torch==2.11.0
+# tqdm==4.67.3
+# einops==0.8.2
+# pydantic==2.12.5
