@@ -29,7 +29,7 @@ def shaping(tensor, h=128, w=128, binary=False):
     return tensor
 
 def min_max_norm(image, lower_q=0.5, upper_q=99.5):
-    """Robust min-max normalization using quantiles.
+    """Robust min-max normalization using quantiles. (old)
     """
     image = tf.cast(image, tf.float32)
     flat = tf.reshape(image, [-1])
@@ -44,47 +44,6 @@ def min_max_norm(image, lower_q=0.5, upper_q=99.5):
     # Min–Max Normalisierung
     image = (image - q_min) / (q_max - q_min + 1e-8)
     return image
-
-def unified_z_score_norm(volume):
-    """
-    Robust 3D Z-Score normalization that blindly handles mixed CT and MRI datasets.
-    Calculates statistics only on the foreground to prevent background-skew.
-    """
-    volume = tf.cast(volume, tf.float32)
-
-    # 1. Blindly determine if CT or MRI
-    # CTs have negative values (air is ~ -1000). MRIs are strictly >= 0.
-    v_min = tf.reduce_min(volume)
-    is_ct = tf.cast(tf.less(v_min, -100.0), tf.float32) 
-    
-    # Set background threshold: Ignore < -500 for CT, and < 1e-3 for MRI
-    threshold = is_ct * (-500.0) + (1.0 - is_ct) * 1e-3
-    
-    # 2. Isolate foreground (patient tissue) pixels
-    foreground_mask = tf.greater(volume, threshold)
-    foreground_pixels = tf.boolean_mask(volume, foreground_mask)
-    
-    # Edge case fallback: If the volume is entirely background, use all pixels
-    foreground_pixels = tf.cond(
-        tf.equal(tf.size(foreground_pixels), 0),
-        lambda: tf.reshape(volume, [-1]),
-        lambda: foreground_pixels
-    )
-
-    # 3. Calculate Mean and Standard Deviation ONLY on the foreground tissue
-    mean = tf.reduce_mean(foreground_pixels)
-    std = tf.math.reduce_std(foreground_pixels)
-
-    # Prevent division by zero
-    std = tf.maximum(std, 1e-8)
-
-    # 4. Apply Z-Score normalization to the ENTIRE volume
-    normalized_volume = (volume - mean) / std
-    
-    # 5. Clip extreme outliers (e.g., metal artifacts in CT or noise spikes in MRI)
-    normalized_volume = tf.clip_by_value(normalized_volume, -5.0, 5.0)
-
-    return normalized_volume
 
 
 def universal_normalization(volume, modality="CT"):
