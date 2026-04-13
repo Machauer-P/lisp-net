@@ -19,6 +19,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from data.test_data.ds_handler import save_dataset as _save_dataset_npz
+from utils.resampling import resample_isotropic
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
@@ -290,7 +291,7 @@ class BaseProcessor:
         _save_dataset_npz(dataset, filename)
 
     # ------------------------------------------------------------------
-    # Hook – must be implemented by subclass
+    # Hooks – must be implemented by subclass
     # ------------------------------------------------------------------
 
     def load_image(self, patient_folder: str, patient_idx: str):
@@ -299,6 +300,10 @@ class BaseProcessor:
             (reference_sitk_image, image_numpy_array)
         or None to skip this patient.
         """
+        raise NotImplementedError
+
+    def get_modality(self) -> str:
+        """Return the imaging modality string for this processor, e.g. 'CT' or 'MRI'."""
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -310,6 +315,8 @@ class BaseProcessor:
         patient_folders = sorted(
             [f.path for f in os.scandir(self.data_folder) if f.is_dir()]
         )
+        modality = self.get_modality()
+        is_ct    = (modality == "CT")
 
         for i, p_folder in enumerate(patient_folders):
             p_idx = os.path.basename(p_folder)
@@ -336,17 +343,28 @@ class BaseProcessor:
             if isinstance(self, MRIProcessor):
                 combined_mask[image_array == 0] = 0
 
-            # 4 – Crop
+            # 4 – Crop to anatomy (operates on original spacing — cheaper + avoids
+            #     resampling a full empty field-of-view)
             image_array, combined_mask = self.crop_to_anatomy(
                 image_array, combined_mask
             )
 
-            # 5 – Store
+            # 5 – Isotropic resampling to 1 mm³ (preserves spatial scale for
+            #     patch-based training without resizing distortion)
+            voxel_sizes = reference_sitk.GetSpacing()[::-1]  # SimpleITK gives (x,y,z); flip to (z,y,x)
+            print(f"  Resampling from spacing {tuple(f'{v:.2f}' for v in voxel_sizes)} mm → 1.0 mm isotropic ...")
+            image_array   = resample_isotropic(image_array,   voxel_sizes, is_mask=False, is_ct=is_ct)
+            combined_mask = resample_isotropic(combined_mask, voxel_sizes, is_mask=True,  is_ct=False)
+            combined_mask = combined_mask.astype(np.uint8)
+            print(f"  -> Resampled shape: {image_array.shape}")
+
+            # 6 – Store (image is float32, mask is uint8, modality is tagged)
             dataset[p_idx] = {
-                "image": image_array,
+                "image":         image_array,
                 "segmentations": combined_mask,
+                "modality":      modality,
             }
-            print(f"  -> Success: shape {image_array.shape}")
+            print(f"  -> Success: shape {image_array.shape}, modality={modality}")
 
         if dataset:
             self.save_dataset(dataset, output_filename)
@@ -362,6 +380,9 @@ class BaseProcessor:
 class CTProcessor(BaseProcessor):
     """Processes CT images – masks are already on the CT grid."""
 
+    def get_modality(self) -> str:
+        return "CT"
+
     def get_signal_threshold(self, image_array: np.ndarray) -> float:
         vmin = float(image_array.min())
         if vmin < -500:
@@ -374,7 +395,7 @@ class CTProcessor(BaseProcessor):
             print(f"  CT not found for {patient_idx}, skipping.")
             return None
 
-        ct_sitk = sitk.ReadImage(ct_paths[0])
+        ct_sitk  = sitk.ReadImage(ct_paths[0])
         ct_array = sitk.GetArrayFromImage(ct_sitk).astype(np.float32)
 
         return ct_sitk, ct_array
@@ -386,6 +407,9 @@ class CTProcessor(BaseProcessor):
 
 class MRIProcessor(BaseProcessor):
     """Processes MRI images – requires registration to CT and mask resampling."""
+
+    def get_modality(self) -> str:
+        return "MRI"
 
     def get_signal_threshold(self, image_array: np.ndarray) -> float:
         """MRI: 2 % of max signal separates tissue from background."""

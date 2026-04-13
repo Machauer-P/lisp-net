@@ -115,8 +115,9 @@ class DataLoader_npz(DataLoader):
 
                 # Store into dataset buffer
                 self.dataset[pid] = {
-                    "image": img,
-                    "segmentations": seg_list
+                    "image":         img,
+                    "segmentations": seg_list,
+                    "modality":      item.get("modality", "UNKNOWN"),
                 }
 
         print(f"\nFinal dataset size: {len(self.dataset)} patients.\n")

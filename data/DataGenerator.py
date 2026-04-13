@@ -2,10 +2,10 @@ import random
 import math
 import time
 
+import numpy as np
 import tensorflow as tf
 
-from utils.preprocessing import min_max_norm
-
+from utils.preprocessing import universal_normalization
 
 class DataGenerator():
     """
@@ -15,11 +15,11 @@ class DataGenerator():
         'segmentations' can be a single segmentation where each int displays a different region or several binary segmentation masks.
     img_height: ...
     img_width: ...
-    minimum_pixel: Number of pixel that need to be in both segmentations (y and y+i) in order to be used for a new DP. 
+    minimum_pixel: Number of pixel that needs to be in each segmentation (y and y+i) in order to be used for a new DP. 
     """
     # Need to add relative minimal cropping volume size because head data is smaller
     
-    def __init__(self, dataloader, img_height=128, img_width=128, minimum_pixel=25):
+    def __init__(self, dataloader, img_height=128, img_width=128, minimum_pixel=5):
         
         # Dataset and further information is stored in the concrete DataLoader object
         self.dataloader = dataloader
@@ -27,6 +27,12 @@ class DataGenerator():
         self.height = img_height
         self.width = img_width
         self.minimum_pixel = minimum_pixel
+
+        # Cache normalized volumes for the duration of one data-generation call.
+        # Key: patient id string  Value: (x_normalized, segs)
+        # Cleared at the start of every get_data_points / get_val_data_points call
+        # so stale data never leaks between training epochs.
+        self._norm_cache: dict = {}
     
     # -------------------------- Helpers --------------------------
 
@@ -42,29 +48,7 @@ class DataGenerator():
             print(f"Error slicing {axis} axis at index {slice_idx} with shape {img.shape}")
             raise e
     
-    def _cast_norm_resize(self, x_2d, x_2d_r, total_label, total_label_plus_r):
-        # Resize and concat only works with 3D (h,w,channels)
-        x_2d = tf.expand_dims(x_2d, axis=-1)
-        x_2d_r = tf.expand_dims(x_2d_r, axis=-1)
-        total_label_plus_r = tf.expand_dims(total_label_plus_r, axis=-1)
-        total_label = tf.expand_dims(total_label, axis=-1)
 
-        # Normalization between 0 and 1. Segm. and Prompt segm. are already binary
-        x_2d = min_max_norm(x_2d)
-        x_2d_r = min_max_norm(x_2d_r)
-        
-        x_2d = tf.cast(x_2d, tf.float32)
-        x_2d_r = tf.cast(x_2d_r, tf.float32)
-        total_label = tf.cast(total_label, tf.float32)
-        total_label_plus_r = tf.cast(total_label_plus_r, tf.float32)
-
-        total_label = tf.image.resize(total_label, [self.height, self.width], method='nearest') # important to use nearest for segmentations
-        total_label_plus_r = tf.image.resize(total_label_plus_r, [self.height, self.width], method='nearest')
-        x_2d = tf.image.resize(x_2d, [self.height, self.width])
-        x_2d_r = tf.image.resize(x_2d_r, [self.height, self.width])
-
-        return x_2d, x_2d_r, total_label, total_label_plus_r
-    
     def _randomnizer(self, x_new, y_new, prompt, offset_list, dimensions):
         #Randomize 3 axis
         if len(dimensions) > 1:
@@ -74,84 +58,136 @@ class DataGenerator():
             x_new, y_new, prompt, offset_list = list(x_new), list(y_new), list(prompt), list(offset_list)
         return x_new, y_new, prompt, offset_list
     
-    def _random_3d_crop(self, volume, mask, min_crop_size):
+    def _extract_patch_2d(self, x_2d, total_label, total_label_r, x_2d_r):
         """
-        Perform the same random 3D crop on two 3D NumPy arrays.
+        Extract a **label-guided** 128×128 patch from a 2-D slice pair.
 
-        Parameters:
-        - volume: Input 3D array (e.g., shape [D, H, W])
-        - mask: Mask 3D array (e.g., shape [D, H, W])
-        - crop_size (tuple): Desired crop size (cd, ch, cw)
+        The crop window is constrained so it is guaranteed to overlap with the
+        bounding box of `total_label`. This prevents the pathological case where
+        a random window lands in an empty background region and the resulting
+        data point contains no segmentation mask.
+
+        Crop selection logic
+        --------------------
+        Given the label bounding box [min_h..max_h] × [min_w..max_w] in the
+        padded slice, the valid top-left origin (start_h, start_w) must satisfy:
+
+            max_h - patch + 1  <=  start_h  <=  min_h
+            max_w - patch + 1  <=  start_w  <=  min_w
+
+        which ensures the patch includes at least one labeled pixel. The origin
+        is chosen uniformly at random within this range, so we still get
+        variety in exactly how much of the structure is visible.
+
+        If `total_label` is entirely empty (should not happen after
+        _select_valid_labels, but handled defensively) we fall back to a
+        fully random crop.
+
+        Because volumes are stored at 1 mm isotropic resolution we never
+        resize – a 128-voxel window always represents 12.8 cm.
+
+        Args:
+            x_2d, x_2d_r        : 2-D array/tensor of shape (H, W).
+            total_label         : 2-D binary mask of shape (H, W) – primary slice.
+            total_label_r       : 2-D binary mask of shape (H, W) – reference slice.
 
         Returns:
-        - Cropped 3D arrays of shape (cd, ch, cw)
-        - Tuple: Contains information how the image was cropped
+            x_2d, x_2d_r, total_label, total_label_r – all shape (1, 128, 128, 1).
         """
-        d, h, w = volume.shape
+        patch_size = self.height  # 128
 
-        min_cd, min_ch, min_cw = min_crop_size
+        def pad_if_needed(t, target):
+            """Symmetrically zero-pad tensor `t` (H, W) so both dims >= target."""
+            h, w = t.shape[0], t.shape[1]
+            pad_h = max(0, target - h)
+            pad_w = max(0, target - w)
+            pad_top    = pad_h // 2
+            pad_bottom = pad_h - pad_top
+            pad_left   = pad_w // 2
+            pad_right  = pad_w - pad_left
+            return tf.pad(t, [[pad_top, pad_bottom], [pad_left, pad_right]])
 
-        # Choose size of new volume randomly between minimal size and shape of the original volume as maximum
-        cd = tf.random.uniform(shape=[], minval=min_cd, maxval=d, dtype=tf.int32)
-        ch = tf.random.uniform(shape=[], minval=min_ch, maxval=h, dtype=tf.int32)
-        cw = tf.random.uniform(shape=[], minval=min_cw, maxval=w, dtype=tf.int32)
+        x_2d          = pad_if_needed(x_2d,          patch_size)
+        x_2d_r        = pad_if_needed(x_2d_r,        patch_size)
+        total_label   = pad_if_needed(total_label,   patch_size)
+        total_label_r = pad_if_needed(total_label_r, patch_size)
 
-        if cd > d or ch > h or cw > w:
-            raise ValueError("Crop size must be smaller than the volume size in all dimensions.")
+        h, w = x_2d.shape[0], x_2d.shape[1]
 
-        start_d = tf.random.uniform(shape=[], minval=0, maxval=d - cd + 1, dtype=tf.int32)
-        start_h = tf.random.uniform(shape=[], minval=0, maxval=h - ch + 1, dtype=tf.int32)
-        start_w = tf.random.uniform(shape=[], minval=0, maxval=w - cw + 1, dtype=tf.int32)
+        # ---- Label-guided crop position ----------------------------------------
+        # Convert to numpy (we are always in eager mode here) so we can use
+        # np.argwhere for the bounding-box computation.
+        label_np = total_label.numpy() if hasattr(total_label, 'numpy') else np.asarray(total_label)
+        nonzero  = np.argwhere(label_np > 0)        # shape [N, 2]
 
-        crop = volume[start_d:start_d+cd, start_h:start_h+ch, start_w:start_w+cw]
-        crop_mask = mask[start_d:start_d+cd, start_h:start_h+ch, start_w:start_w+cw]
+        if len(nonzero) > 0:
+            min_h_l, min_w_l = nonzero.min(axis=0)
+            max_h_l, max_w_l = nonzero.max(axis=0)
 
-        return crop, crop_mask, (start_d, start_d+cd), (start_h, start_h+ch), (start_w, start_w+cw)
-    
-    def _prepare_volume(self, current_dict, cropping, min_crop_size):
-        """
-        Prepare image and segmentation volumes.
-        min_crop_size is now a percentage (e.g., 0.5 → 50% of each dimension).
-        """
-        segs = current_dict['segmentations']
-        x = current_dict['image']
+            # Valid start-row range so the patch overlaps the label bbox.
+            lo_h = int(max(0,            max_h_l - patch_size + 1))
+            hi_h = int(min(h - patch_size, min_h_l))
+            hi_h = max(lo_h, hi_h)   # safety-clamp in case bbox > patch_size
 
-        # Determine dynamic min_crop_size: percentage of volume
-        pct = float(min_crop_size)
-        if pct <= 0 or pct > 1:
-            raise ValueError("min_crop_size must be in the range (0,1].")
-        min_cd = max(1, int(x.shape[0] * pct))
-        min_ch = max(1, int(x.shape[1] * pct))
-        min_cw = max(1, int(x.shape[2] * pct))
-        min_crop_size = (min_cd, min_ch, min_cw)
+            lo_w = int(max(0,            max_w_l - patch_size + 1))
+            hi_w = int(min(w - patch_size, min_w_l))
+            hi_w = max(lo_w, hi_w)
 
-        # Multi-segmentation case
-        if isinstance(segs, list):
-            if cropping:
-                # Crop using first segmentation to compute coordinates
-                x_crop, _, crop_d, crop_h, crop_w = self._random_3d_crop(
-                    x, segs[0], min_crop_size
-                )
-                cropped_segs = [
-                    s[crop_d[0]:crop_d[1], crop_h[0]:crop_h[1], crop_w[0]:crop_w[1]]
-                    for s in segs
-                ]
-                return x_crop, cropped_segs
-            else:
-                return x, segs
-
-        # Single segmentation case
+            start_h = random.randint(lo_h, hi_h)
+            start_w = random.randint(lo_w, hi_w)
         else:
-            if cropping:
-                x_crop, y_crop, _, _, _ = self._random_3d_crop(
-                    x, segs, min_crop_size
-                )
-                return x_crop, y_crop
-            else:
-                return x, segs
+            # Fallback – label is empty (defensive; should not happen here).
+            start_h = random.randint(0, max(0, h - patch_size))
+            start_w = random.randint(0, max(0, w - patch_size))
+        # ------------------------------------------------------------------------
+
+        def crop(t):
+            return t[start_h : start_h + patch_size, start_w : start_w + patch_size]
+
+        x_2d          = crop(x_2d)
+        x_2d_r        = crop(x_2d_r)
+        total_label   = crop(total_label)
+        total_label_r = crop(total_label_r)
+
+        # Add batch and channel dims → (1, 128, 128, 1)
+        x_2d          = tf.cast(x_2d[tf.newaxis, ..., tf.newaxis], tf.float32)
+        x_2d_r        = tf.cast(x_2d_r[tf.newaxis, ..., tf.newaxis], tf.float32)
+        total_label   = tf.cast(total_label[tf.newaxis, ..., tf.newaxis], tf.float32)
+        total_label_r = tf.cast(total_label_r[tf.newaxis, ..., tf.newaxis], tf.float32)
+
+        return x_2d, x_2d_r, total_label, total_label_r
+
+    def _prepare_volume(self, current_dict, pid=None):
+        """
+        Normalize the image volume from the dataset dict.
+
+        Volumes are already at 1 mm isotropic resolution (resampled during NPZ
+        generation), so no spatial resampling is performed here.
+
+        Parameters
+        ----------
+        current_dict : dict
+            Single-patient entry from the dataloader.
+        pid : str, optional
+            Patient ID used as cache key. When provided the normalized volume is
+            stored in ``self._norm_cache`` and reused on subsequent visits within
+            the same data-generation call, avoiding repeated 3-D TF operations.
+        """
+        if pid is not None and pid in self._norm_cache:
+            return self._norm_cache[pid]
+
+        segs     = current_dict['segmentations']
+        x        = current_dict['image']
+        modality = current_dict.get('modality', 'UNKNOWN')
+
+        x = universal_normalization(x, modality=modality)
+
+        result = (x, segs)
+        if pid is not None:
+            self._norm_cache[pid] = result
+        return result
 
 
-    
     def _process_dimension(self, x, y, d, offset, max_number_labels, x_new, y_new, prompt, offset_list, slices_added, max_data_points):
         slices_added_per_pid = 0
         
@@ -238,12 +274,25 @@ class DataGenerator():
         x_2d = self._get_2d_data(x, i, d)
         x_2d_r = self._get_2d_data(x, i + r, d)
 
-        x_2d, x_2d_r, total_label, total_label_r = self._cast_norm_resize(
-            x_2d, x_2d_r, total_label, total_label_r
+        x_2d, x_2d_r, total_label, total_label_r = self._extract_patch_2d(
+            x_2d, total_label, total_label_r, x_2d_r
         )
+
+        # Post-crop validation -----------------------------------------------
+        # _extract_patch_2d guarantees the PRIMARY label (total_label) overlaps
+        # the crop window, but total_label_r (reference slice at i+r) is cropped
+        # at the same position without guidance.  If the anatomy shifted between
+        # slices (e.g. offset=5 → 5mm), the reference label may land outside
+        # the 128×128 window → invisible segmentation in the prompt.
+        # Discard the datapoint if either mask is too sparse after cropping.
+        if (tf.math.count_nonzero(total_label)   < self.minimum_pixel or
+                tf.math.count_nonzero(total_label_r) < self.minimum_pixel):
+            return None
+        # --------------------------------------------------------------------
 
         p = tf.concat([x_2d_r, total_label_r], axis=-1)
         return x_2d, total_label, p
+
     
     def _select_valid_labels(self, y_2d, y_2d_r, max_number_labels, primary_task):
         """
@@ -364,9 +413,13 @@ class DataGenerator():
 
     # -------------------------- Generators --------------------------
     
-    def _get_data_points(self, max_data_points, offset, max_number_labels, dimensions, cropping, min_crop_size):
+    def _get_data_points(self, max_data_points, offset, max_number_labels, dimensions):
         start = time.time()
         print("Creating new Data Points ...")
+
+        # Clear the normalization cache so we normalize each patient exactly once
+        # per data-generation call instead of on every loop iteration.
+        self._norm_cache.clear()
 
         offset_list = []
         x_new, y_new, prompt = [], [], []
@@ -379,7 +432,7 @@ class DataGenerator():
             for id in self.dataloader.current_ids:
 
                 current_dict = self.dataloader.dataset[id]
-                x, y = self._prepare_volume(current_dict, cropping, min_crop_size)
+                x, y = self._prepare_volume(current_dict, pid=id)
                 
                 # Unwrap single-element list to treat as a single multi-label volume
                 if isinstance(y, list) and len(y) == 1:
@@ -410,7 +463,7 @@ class DataGenerator():
         return ds, offset_list
 
     
-    def _get_data_points_from_one_task(self, max_data_points, offset, dimensions, cropping, min_crop_size):
+    def _get_data_points_from_one_task(self, max_data_points, offset, dimensions):
         
         start = time.time()
         print("Creating new Data Points ...")
@@ -456,7 +509,7 @@ class DataGenerator():
                     break # Give up if task is extremely sparse
 
                 current_dict = self.dataloader.dataset[id]
-                x, y = self._prepare_volume(current_dict, cropping, min_crop_size)
+                x, y = self._prepare_volume(current_dict, pid=id)
                 if isinstance(y, list) and len(y) == 1:
                     y = y[0]
 
@@ -511,8 +564,8 @@ class DataGenerator():
                     x_2d = self._get_2d_data(x, i, d)
                     x_2d_r = self._get_2d_data(x, i + r, d)
 
-                    x_2d, x_2d_r, total_label, total_label_r = self._cast_norm_resize(
-                        x_2d, x_2d_r, total_label, total_label_r
+                    x_2d, x_2d_r, total_label, total_label_r = self._extract_patch_2d(
+                        x_2d, total_label, total_label_r, x_2d_r
                     )
                     p = tf.concat([x_2d_r, total_label_r], axis=-1)
 
@@ -548,49 +601,26 @@ class DataGenerator():
     
     
     # -------------------------- Public Getters --------------------------
-    
-    def get_data_points(self, max_data_points=3500, offset=5, max_number_labels=1, dimensions=['x','y','z'], cropping=False, min_crop_size=0.5, cropping_composition=1):
-        "If cropping_composition is e.g. 0.8, then 80% cropped dp are created and 20% non cropped"
-        
-        self.dataloader.current_ids = self.dataloader.train_ids
-        
-        if cropping_composition == 1:
-            
-            ds, offsets = self._get_data_points(max_data_points, offset, max_number_labels, dimensions, cropping, min_crop_size)
-            return ds, offsets
-        
-        else:
-            if cropping == False:
-                raise ValueError("Can't use mixed cropping and no cropping at the same time. Set cropping_composition=1 or set cropping=True!")
-                
-            ds_crop, offset_crop = self._get_data_points(int(max_data_points*cropping_composition), offset, max_number_labels, dimensions, cropping, min_crop_size)
-            ds_no_crop, offset_no_crop = self._get_data_points(int(max_data_points*(1.0-cropping_composition)), offset, max_number_labels, dimensions, cropping, min_crop_size)
 
-            offset_crop = tf.data.Dataset.from_tensor_slices(offset_crop)
-            offset_no_crop = tf.data.Dataset.from_tensor_slices(offset_no_crop)
-
-            ds_crop = tf.data.Dataset.zip((ds_crop, offset_crop))
-            ds_no_crop = tf.data.Dataset.zip((ds_no_crop, offset_no_crop))
-
-            combined_ds = ds_crop.concatenate(ds_no_crop)
-
-            combined_ds = combined_ds.shuffle(buffer_size=10000, reshuffle_each_iteration=False)
-
-            final_ds = combined_ds.map(lambda data, offset: data)
-            final_offset_list = [offset.numpy() for _, offset in combined_ds]
-
-            
-            return final_ds, final_offset_list
-
-    def get_val_data_points(self, max_data_points=3500, offset=5, max_number_labels=1, dimensions=['x','y','z'], cropping=False, min_crop_size=0.75):
-        self.dataloader.current_ids = self.dataloader.validation_ids
-        ds, offsets = self._get_data_points(max_data_points, offset, max_number_labels, dimensions, cropping, min_crop_size)
-        return ds, offsets
-    
-    def get_data_points_from_one_task(self, max_data_points=3500, offset=5, dimensions=['x','y','z'], cropping=False, min_crop_size=0.75):
-        """Be sure to choose the dimension, otherwise it will be all 3 mixed. And define the task if needed, otherwise it will be random.
-        Returns: tf.Dataset. One Task from one random patient. Each element of ds = (x,y,p)
+    def get_data_points(self, max_data_points=3500, offset=5, max_number_labels=1, dimensions=['x','y','z']):
+        """
+        Generate training data points.
+        Each element of the returned dataset is a tuple (x, y, prompt), all
+        shape (1, 128, 128, 1) or (1, 128, 128, 2) for the prompt.
         """
         self.dataloader.current_ids = self.dataloader.train_ids
-        ds, offsets = self._get_data_points_from_one_task(max_data_points, offset, dimensions, cropping, min_crop_size)
+        ds, offsets = self._get_data_points(max_data_points, offset, max_number_labels, dimensions)
+        return ds, offsets
+
+    def get_val_data_points(self, max_data_points=3500, offset=5, max_number_labels=1, dimensions=['x','y','z']):
+        self.dataloader.current_ids = self.dataloader.validation_ids
+        ds, offsets = self._get_data_points(max_data_points, offset, max_number_labels, dimensions)
+        return ds, offsets
+
+    def get_data_points_from_one_task(self, max_data_points=3500, offset=5, dimensions=['x','y','z']):
+        """Generate data points from a single randomly selected task.
+        Returns: tf.Dataset. One Task from one random patient. Each element of ds = (x, y, p)
+        """
+        self.dataloader.current_ids = self.dataloader.train_ids
+        ds, offsets = self._get_data_points_from_one_task(max_data_points, offset, dimensions)
         return ds, offsets

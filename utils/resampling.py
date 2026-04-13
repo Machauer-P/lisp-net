@@ -1,20 +1,59 @@
-# import numpy as np
-import tensorflow as tf
+import numpy as np
 from scipy.ndimage import zoom
-# from scipy.ndimage import map_coordinates
 
-def resample_isotropic(volume, voxel_sizes, order=1):
+
+def resample_isotropic(volume, voxel_sizes, is_mask=False, is_ct=False):
     """
-    Resample 3D-Volume to isotropic 1 mm resolution.
+    Resample a 3-D volume to isotropic 1 mm resolution.
 
-    volume: numpy array
-    voxel_sizes: Tuple (sx, sy, sz) in mm
-    order: choose 0 for masks and 1 for images
+    This function is intended for use at *data preparation time* (e.g. when
+    converting raw NRRD/NIfTI files to .npz archives).  It operates entirely
+    in NumPy so it can run outside of a TensorFlow graph or session.  Every
+    .npz file produced by the pipeline stores volumes that have already been
+    resampled to 1 mm isotropic spacing, so this function should *not* be
+    called again inside the DataGenerator.
+
+    Args:
+        volume    : np.ndarray, shape (Z, Y, X) — the raw volume.
+        voxel_sizes: tuple of floats (sz, sy, sx) — original voxel spacing in mm.
+        is_mask   : bool — True when resampling a segmentation/label volume.
+                    Uses nearest-neighbour interpolation to prevent label blurring.
+        is_ct     : bool — True when the modality is Computed Tomography.
+                    Pads new voxels with -1024 HU (air) instead of 0.
+
+    Returns:
+        np.ndarray (float32) resampled to 1 mm isotropic spacing.
     """
     target_spacing = 1.0
+
+    # Zoom factors: original_spacing / target_spacing
     zoom_factors = [vs / target_spacing for vs in voxel_sizes]
-    volume_iso = zoom(volume, zoom=zoom_factors, order=order, mode='nearest')  
-    return tf.cast(volume_iso, tf.float32)
+
+    # Interpolation order:
+    #   0 = Nearest Neighbour  →  masks  (no label blurring)
+    #   1 = Trilinear          →  images (smooth intensity)
+    order = 0 if is_mask else 1
+
+    # Background padding value (cval):
+    #   mask  → 0            (background class)
+    #   CT    → -1024 HU     (air, the physical background for CT)
+    #   MRI   → 0            (conventional black background)
+    if is_mask:
+        bg_value = 0
+    elif is_ct:
+        bg_value = -1024
+    else:
+        bg_value = 0
+
+    volume_iso = zoom(
+        volume,
+        zoom=zoom_factors,
+        order=order,
+        mode='constant',
+        cval=bg_value,
+    )
+
+    return volume_iso.astype(np.float32)
 
 
 # def gen_grid(shape):
