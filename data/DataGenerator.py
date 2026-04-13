@@ -149,11 +149,11 @@ class DataGenerator():
         total_label   = crop(total_label)
         total_label_r = crop(total_label_r)
 
-        # Add batch and channel dims → (1, 128, 128, 1)
-        x_2d          = tf.cast(x_2d[tf.newaxis, ..., tf.newaxis], tf.float32)
-        x_2d_r        = tf.cast(x_2d_r[tf.newaxis, ..., tf.newaxis], tf.float32)
-        total_label   = tf.cast(total_label[tf.newaxis, ..., tf.newaxis], tf.float32)
-        total_label_r = tf.cast(total_label_r[tf.newaxis, ..., tf.newaxis], tf.float32)
+        # Add channel dim → (128, 128, 1)
+        x_2d          = tf.cast(x_2d[..., tf.newaxis], tf.float32)
+        x_2d_r        = tf.cast(x_2d_r[..., tf.newaxis], tf.float32)
+        total_label   = tf.cast(total_label[..., tf.newaxis], tf.float32)
+        total_label_r = tf.cast(total_label_r[..., tf.newaxis], tf.float32)
 
         return x_2d, x_2d_r, total_label, total_label_r
 
@@ -189,6 +189,13 @@ class DataGenerator():
 
 
     def _process_dimension(self, x, y, d, offset, max_number_labels, x_new, y_new, prompt, offset_list, slices_added, max_data_points):
+        # Skip dimension if the resulting 2D slice is strictly smaller than the patch size.
+        # This prevents the generator from padding thin slices which results in "squashed line" artifacts.
+        dim_idx = 'xyz'.index(d)
+        slice_dims = [s for i, s in enumerate(x.shape) if i != dim_idx]
+        if min(slice_dims) < max(self.height, self.width):
+            return slices_added
+
         slices_added_per_pid = 0
         
         # 1. Determine fully available Tasks globally for this patient
@@ -478,6 +485,8 @@ class DataGenerator():
         while slices_added < max_data_points:
 
             if task == 0:
+                # Re-pick building blocks
+                d = random.choice(dimensions)
                 # Pick a valid task globally from a random patient
                 random.shuffle(self.dataloader.current_ids)
                 for id in self.dataloader.current_ids:
@@ -512,6 +521,12 @@ class DataGenerator():
                 x, y = self._prepare_volume(current_dict, pid=id)
                 if isinstance(y, list) and len(y) == 1:
                     y = y[0]
+
+                # Pre-check if dimension is too small and would require 0-padding
+                dim_idx = 'xyz'.index(d)
+                slice_dims = [s for j, s in enumerate(x.shape) if j != dim_idx]
+                if min(slice_dims) < max(self.height, self.width):
+                    continue
 
                 # Pre-check if patient actually has the desired task
                 if isinstance(y, list):

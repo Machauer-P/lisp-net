@@ -30,17 +30,6 @@ Shared infrastructure for all *_to_npz converters in this folder.
 ║          "modality":      "CT" | "MRI",                                     ║
 ║          "spacing":       (sz, sy, sx),            # voxel size in mm       ║
 ║      }                                                                       ║
-║                                                                              ║
-║  Important: if your source volumes are NOT already cropped to the anatomy   ║
-║  region, apply a crop before adding them here.  See                         ║
-║                                                                              ║
-║      data/test_data/HanSeg_to_npz.py → BaseProcessor.crop_to_anatomy()     ║
-║                                                                              ║
-║  for a ready-to-use hybrid strategy (Z: segmentation extent ∩ image signal  ║
-║  extent; X/Y: image signal extent) with a configurable safety margin.       ║
-║  The data produced by our server pipelines is already cropped, so this      ║
-║  step is skipped here.                                                       ║
-║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
