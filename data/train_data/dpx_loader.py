@@ -58,20 +58,32 @@ def get_spacing(r) -> tuple:
     """
     Extract voxel spacing (sz, sy, sx) in mm from a patchwork rset_ entry.
 
-    Handles the most common return formats (numpy array, TF tensor, scalar).
+    Handles the most common return formats:
+    - Dictionary: {'voxsize': [x, y, z], ...} (returned by modern patchwork)
+    - Array/Tensor: [z, y, x] (returned by some legacy versions)
+
     Falls back to (1.0, 1.0, 1.0) if the format is unrecognised.
 
     Note
     ----
-    patchwork's load_data_structured() returns rset_ as a list of per-subject
-    resolution objects.  The exact internal format can vary between patchwork
-    versions.  The elements are assumed to be ordered (z, y, x) in mm.
+    If a dictionary with 'voxsize' is found, the elements [x, y, z] are
+    reversed to return (z, y, x) in mm, matching the pipeline's expectations.
     """
     try:
+        # 1. Handle modern patchwork dictionary format
+        if isinstance(r, dict) and 'voxsize' in r:
+            r = r['voxsize']
+            arr = np.asarray(r, dtype=float).flatten()
+            if arr.size >= 3:
+                # [x, y, z] -> (z, y, x)
+                return (float(arr[2]), float(arr[1]), float(arr[0]))
+
+        # 2. Handle legacy array / tensor formats
         if tf.is_tensor(r):
             r = r.numpy()
         arr = np.asarray(r, dtype=float).flatten()
         if arr.size >= 3:
+            # Assume [z, y, x] as per original loader convention
             return tuple(float(v) for v in arr[:3])
         if arr.size == 1:
             v = float(arr[0])
@@ -214,9 +226,25 @@ class DPXSession:
         label : label filename, e.g. ``'labels.nii.gz'``.
         """
         ext = lambda d, e: {(k + e): d[k] for k in d}
+
+        # Fetch separately so we can log what the server returns
+        res_img   = self._dpx(self._project, [ids, img])
+        res_label = self._dpx(self._project, [ids, label])
+
+        print(f"  [DPX] get({ids!r:30s}, {img!r}) "
+              f"\u2192 img:{len(res_img)} label:{len(res_label)} files")
+
+        if not res_img:
+            print(f"  [DPX] WARNING: no image files matched {ids!r} / {img!r} "
+                  f"\u2014 check STAG name, patient ID, and file path.")
+        if not res_label:
+            print(f"  [DPX] WARNING: no label files matched {ids!r} / {label!r} "
+                  f"\u2014 check label path.")
+
         # Both dicts are keyed by the *image* name (original patchwork convention).
-        self._ximg.update(ext(self._dpx(self._project, [ids, img]),   img))
-        self._limg.update(ext(self._dpx(self._project, [ids, label]), img))
+        self._ximg.update(ext(res_img,   img))
+        self._limg.update(ext(res_label, img))
+
 
     # ------------------------------------------------------------------
 
@@ -260,49 +288,41 @@ class DPXSession:
             return {}
 
         getfname = lambda d: [{k: d[k][list(d[k].keys())[0]]['FilePath'] for k in d}]
-        getidx   = lambda d: [{k: d[k][list(d[k].keys())[0]]['STag'] + k.split("#")[1] for k in d}]
+        # No tf.device context — for offline NPZ generation there are no TF
+        # training ops that require CPU pinning, and the context serialises
+        # patchwork's internal loading threads (causing the slowdown).
+        loading   = {"integer_labels": True}
+        contrasts = getfname(self._ximg)
+        labels    = getfname(self._limg)
+        subjects  = list(contrasts[0].keys())
 
-        with tf.device("/cpu:0"):
-            loading   = {"integer_labels": True}
-            contrasts = getfname(self._ximg)
-            tidx      = getidx(self._ximg)[0]
-            labels    = getfname(self._limg)
-            subjects  = list(contrasts[0].keys())
+        tset_, lset_, rset_, subjs = self._pw.improc_utils.load_data_structured(
+            contrasts=contrasts, labels=labels, subjects=subjects, **loading
+        )
 
-            tset_, lset_, rset_, subjs = self._pw.improc_utils.load_data_structured(
-                contrasts=contrasts, labels=labels, subjects=subjects, **loading
-            )
+        tset, lset, rset = [], [], []
 
-            tset, lset, rset, iset = [], [], [], []
-            didx = {}
-            cnt  = 0
+        for k in range(len(tset_)):
+            if max_img is not None and k >= max_img:
+                break
+            for j in range(tset_[k].shape[4]):
+                tset.append(tset_[k][..., j:j + 1])
+                tmp_ = lset_[k][:, :, :, :, 0:1]
+                tmp_ = tf.where(tmp_ < 0, 0, tmp_)
+                lset.append(tf.cast(tmp_, dtype=tf.int32))
+                rset.append(rset_[k])
 
-            for k in range(len(tset_)):
-                if max_img is not None and cnt >= max_img:
-                    break
-                if tidx[subjs[k]] not in didx:
-                    didx[tidx[subjs[k]]] = str(cnt)
-                    cnt += 1
-                for j in range(tset_[k].shape[4]):
-                    tset.append(tset_[k][..., j:j + 1])
-                    tmp_ = lset_[k][:, :, :, :, 0:1]
-                    tmp_ = tf.where(tmp_ < 0, 0, tmp_)
-                    lset.append(tf.cast(tmp_, dtype=tf.int32))
-                    rset.append(rset_[k])
-                    iset.append(didx[tidx[subjs[k]]] + "_" + str(j))
+        result: dict = {}
 
-            # Stable sequential re-numbering within this group
-            iset_map = dict([(y, x + 1) for x, y in enumerate(sorted(set(iset)))])
-            result: dict = {}
-
-            for idx in range(len(tset)):
-                seq   = iset_map[iset[idx]]
-                pid   = f"{id_prefix}_{seq}" if id_prefix else str(seq)
-                result[pid] = {
-                    "image":         tf.squeeze(tset[idx]),
-                    "segmentations": tf.squeeze(lset[idx]),
-                    "modality":      modality,
-                    "spacing":       get_spacing(rset[idx]),
-                }
+        for idx in range(len(tset)):
+            seq   = idx + 1
+            pid   = f"{id_prefix}_{seq}" if id_prefix else str(seq)
+            result[pid] = {
+                "image":         tf.squeeze(tset[idx]),
+                "segmentations": tf.squeeze(lset[idx]),
+                "modality":      modality,
+                "spacing":       get_spacing(rset[idx]),
+            }
 
         return result
+
