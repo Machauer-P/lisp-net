@@ -32,7 +32,7 @@ def plot_one_dp(x, y, p, offset, contrast=1):
     plt.show()
     print()
 
-def plot_result(x, y, p, pred, offset, pred_titel='', contrast=1):
+def plot_result(x, y, p, pred, offset, pred_titel='', contrast=1, show=True):
     fig, axes = plt.subplots(1, 3, figsize=(7, 7))
 
     y = np.squeeze(y.numpy())
@@ -64,7 +64,9 @@ def plot_result(x, y, p, pred, offset, pred_titel='', contrast=1):
     axes[2].set_title(pred_titel, fontsize=10)
     axes[2].axis("off")
 
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 def visualize_a_few_results(model_name:str, loaded_model: tf.keras.Model, ds, offset, img_to_plot=8, threshold=0.45, contrast=1):
     from utils.metrics import dice_score_tf

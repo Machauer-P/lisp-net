@@ -49,14 +49,14 @@ class DataGenerator():
             raise e
     
 
-    def _randomnizer(self, x_new, y_new, prompt, offset_list, dimensions):
+    def _randomnizer(self, x_new, y_new, prompt, offset_list, m_new, dimensions):
         #Randomize 3 axis
         if len(dimensions) > 1:
-            zipped_lists = list(zip(x_new, y_new, prompt, offset_list))
+            zipped_lists = list(zip(x_new, y_new, prompt, offset_list, m_new))
             random.shuffle(zipped_lists)
-            x_new, y_new, prompt, offset_list = zip(*zipped_lists)
-            x_new, y_new, prompt, offset_list = list(x_new), list(y_new), list(prompt), list(offset_list)
-        return x_new, y_new, prompt, offset_list
+            x_new, y_new, prompt, offset_list, m_new = zip(*zipped_lists)
+            x_new, y_new, prompt, offset_list, m_new = list(x_new), list(y_new), list(prompt), list(offset_list), list(m_new)
+        return x_new, y_new, prompt, offset_list, m_new
     
     def _extract_patch_2d(self, x_2d, total_label, total_label_r, x_2d_r):
         """
@@ -96,7 +96,7 @@ class DataGenerator():
         """
         patch_size = self.height  # 128
 
-        def pad_if_needed(t, target):
+        def pad_if_needed(t, target, pad_val=0.0):
             """Symmetrically zero-pad tensor `t` (H, W) so both dims >= target."""
             h, w = t.shape[0], t.shape[1]
             pad_h = max(0, target - h)
@@ -105,12 +105,12 @@ class DataGenerator():
             pad_bottom = pad_h - pad_top
             pad_left   = pad_w // 2
             pad_right  = pad_w - pad_left
-            return tf.pad(t, [[pad_top, pad_bottom], [pad_left, pad_right]])
+            return tf.pad(t, [[pad_top, pad_bottom], [pad_left, pad_right]], constant_values=pad_val)
 
-        x_2d          = pad_if_needed(x_2d,          patch_size)
-        x_2d_r        = pad_if_needed(x_2d_r,        patch_size)
-        total_label   = pad_if_needed(total_label,   patch_size)
-        total_label_r = pad_if_needed(total_label_r, patch_size)
+        x_2d          = pad_if_needed(x_2d,          patch_size, pad_val=-5.0)
+        x_2d_r        = pad_if_needed(x_2d_r,        patch_size, pad_val=-5.0)
+        total_label   = pad_if_needed(total_label,   patch_size, pad_val=0.0)
+        total_label_r = pad_if_needed(total_label_r, patch_size, pad_val=0.0)
 
         h, w = x_2d.shape[0], x_2d.shape[1]
 
@@ -188,7 +188,7 @@ class DataGenerator():
         return result
 
 
-    def _process_dimension(self, x, y, d, offset, max_number_labels, x_new, y_new, prompt, offset_list, slices_added, max_data_points):
+    def _process_dimension(self, x, y, d, offset, max_number_labels, x_new, y_new, prompt, offset_list, m_new, modality_flag, slices_added, max_data_points):
         # Skip dimension if the resulting 2D slice is strictly smaller than the patch size.
         # This prevents the generator from padding thin slices which results in "squashed line" artifacts.
         dim_idx = 'xyz'.index(d)
@@ -242,6 +242,7 @@ class DataGenerator():
                     y_new.append(y2d)
                     prompt.append(p)
                     offset_list.append(r)
+                    m_new.append(modality_flag)
                     slices_added += 1
                     slices_added_per_pid += 1
                     found_slice = True
@@ -429,7 +430,7 @@ class DataGenerator():
         self._norm_cache.clear()
 
         offset_list = []
-        x_new, y_new, prompt = [], [], []
+        x_new, y_new, prompt, m_new = [], [], [], []
         slices_added = 0
 
         while slices_added < max_data_points:
@@ -439,6 +440,9 @@ class DataGenerator():
             for id in self.dataloader.current_ids:
 
                 current_dict = self.dataloader.dataset[id]
+                modality_str = current_dict.get('modality', 'UNKNOWN')
+                is_mri = 0.0 if modality_str == 'CT' else 1.0
+
                 x, y = self._prepare_volume(current_dict, pid=id)
                 
                 # Unwrap single-element list to treat as a single multi-label volume
@@ -454,16 +458,16 @@ class DataGenerator():
 
                     slices_added = self._process_dimension(
                         x, y, d, offset, max_number_labels,
-                        x_new, y_new, prompt, offset_list, slices_added, 
+                        x_new, y_new, prompt, offset_list, m_new, is_mri, slices_added, 
                         max_data_points)
 
                     if slices_added >= max_data_points:
                         break
 
         # Finalize dataset
-        x_new, y_new, prompt, offset_list = self._randomnizer(x_new, y_new, prompt, offset_list, dimensions)
+        x_new, y_new, prompt, offset_list, m_new = self._randomnizer(x_new, y_new, prompt, offset_list, m_new, dimensions)
         ds = tf.data.Dataset.from_tensor_slices((
-            tf.stack(x_new), tf.stack(y_new), tf.stack(prompt)
+            tf.stack(x_new), tf.stack(y_new), tf.stack(prompt), tf.cast(m_new, tf.float32)
         ))
 
         print(f'It took {time.time() - start:.0f} seconds')
@@ -476,7 +480,7 @@ class DataGenerator():
         print("Creating new Data Points ...")
 
         offset_list = []
-        x_new, y_new, prompt = [], [], []
+        x_new, y_new, prompt, m_new = [], [], [], []
         slices_added = 0
         task = 0
 
@@ -518,6 +522,9 @@ class DataGenerator():
                     break # Give up if task is extremely sparse
 
                 current_dict = self.dataloader.dataset[id]
+                modality_str = current_dict.get('modality', 'UNKNOWN')
+                is_mri = 0.0 if modality_str == 'CT' else 1.0
+
                 x, y = self._prepare_volume(current_dict, pid=id)
                 if isinstance(y, list) and len(y) == 1:
                     y = y[0]
@@ -588,6 +595,7 @@ class DataGenerator():
                     y_new.append(total_label)
                     prompt.append(p)
                     offset_list.append(r)
+                    m_new.append(is_mri)
                     slices_added += 1
 
             if slices_added < max_data_points:
@@ -599,16 +607,17 @@ class DataGenerator():
                 task = 0
                 slices_added = 0
                 offset_list.clear() # Clearing correctly since it's a list
+                m_new.clear()
                 x_new.clear()
                 y_new.clear()
                 prompt.clear()
 
         # Shuffle / stack
-        x_new, y_new, prompt, offset_list = self._randomnizer(
-            x_new, y_new, prompt, offset_list, dimensions
+        x_new, y_new, prompt, offset_list, m_new = self._randomnizer(
+            x_new, y_new, prompt, offset_list, m_new, dimensions
         )
         ds = tf.data.Dataset.from_tensor_slices((
-            tf.stack(x_new), tf.stack(y_new), tf.stack(prompt)
+            tf.stack(x_new), tf.stack(y_new), tf.stack(prompt), tf.cast(m_new, tf.float32)
         ))
 
         print(f'It took {(time.time() - start):.0f} seconds')

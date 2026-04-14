@@ -23,6 +23,7 @@ Usage Examples:
         --prob_gamma 0.0 
         --prob_noise 1.0 
         --prob_independent_noise 1.0 
+        --prob_geometric 0.0
         --prob_morph 0.0 
         --prob_dropout 0.0 
         --prob_false_pos 0.0
@@ -67,6 +68,7 @@ def main():
     parser.add_argument("--prob_gamma", type=float, default=None)
     parser.add_argument("--prob_noise", type=float, default=None)
     parser.add_argument("--prob_independent_noise", type=float, default=None)
+    parser.add_argument("--prob_geometric", type=float, default=None)
     parser.add_argument("--prob_morph", type=float, default=None)
     parser.add_argument("--prob_dropout", type=float, default=None)
     parser.add_argument("--prob_false_pos", type=float, default=None)
@@ -81,6 +83,7 @@ def main():
         "prob_photo": get_prob(args.prob_photo),
         "prob_gamma": get_prob(args.prob_gamma),
         "prob_noise": get_prob(args.prob_noise),
+        "prob_geometric": get_prob(args.prob_geometric),
         "prob_independent_noise": get_prob(args.prob_independent_noise),
         "prob_morph": get_prob(args.prob_morph),
         "prob_dropout": get_prob(args.prob_dropout),
@@ -121,11 +124,11 @@ def main():
             f_stats.write(f"Probabilities: {probs}\n")
             f_stats.write("="*40 + "\n\n")
 
-            for i, (x, y, p) in enumerate(ds):
+            for i, (x, y, p, m) in enumerate(ds):
                 print(f"--- [{mod}] DP {i+1} ---")
                 print_statistics(f"Original x {i+1}", x, file=f_stats)
                 
-                x_aug, y_aug, p_aug = augmenter(x, y, p)
+                x_aug, y_aug, p_aug = augmenter(x, y, p, m)
                 
                 print_statistics(f"Augmented x {i+1}", x_aug, file=f_stats)
                 print_statistics(f"Augmented y {i+1}", y_aug, file=f_stats)

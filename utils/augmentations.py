@@ -83,9 +83,15 @@ def random_gaussian_noise(x, min_std=0.0, max_std=0.06):
 def random_gamma(x, min_gamma=0.7, max_gamma=1.5):
     """Applies a random gamma curve to non-linearly shift contrast."""
     gamma = tf.random.uniform([], min_gamma, max_gamma)
-    # Ensure x is in [0, 1] before applying gamma
-    x_clipped = tf.clip_by_value(x, 0.0, 1.0)
-    return tf.pow(x_clipped, gamma)
+    
+    # Safely map [-5.0, 5.0] Z-score bounds to [0, 1] before applying gamma power curve
+    x_norm = (x + 5.0) / 10.0
+    x_norm = tf.clip_by_value(x_norm, 0.0, 1.0)
+    
+    x_gamma = tf.pow(x_norm, gamma)
+    
+    # Map back to original [-5.0, 5.0] distribution
+    return (x_gamma * 10.0) - 5.0
 
 
 def capped_dropout_blockwise(mask,
@@ -336,6 +342,7 @@ class PromptUNetAugmenter:
                  prob_gamma=0.45,
                  prob_noise=0.40,
                  prob_independent_noise=0.5,
+                 prob_geometric=0.85,
                  prob_morph=0.6,
                  prob_dropout=0.4,
                  prob_false_pos=0.6,
@@ -352,6 +359,7 @@ class PromptUNetAugmenter:
         self.prob_gamma = prob_gamma
         self.prob_noise = prob_noise
         self.prob_independent_noise = prob_independent_noise
+        self.prob_geometric = prob_geometric
         self.prob_morph = prob_morph
         self.prob_dropout = prob_dropout
         self.prob_false_pos = prob_false_pos
@@ -374,52 +382,61 @@ class PromptUNetAugmenter:
 
         # Keras Sequential Model for Photo Augmentation
         self.photo_aug = Sequential([
-            layers.RandomBrightness(factor=0.05, value_range=(0, 1)),
+            layers.RandomBrightness(factor=0.1, value_range=(-5.0, 5.0)),
             layers.RandomContrast(factor=0.15)
         ])
 
-    def __call__(self, x, y, p):
+    def __call__(self, x, y, p, m=None):
         """
         Main augmentation logic to map over the dataset. 
         Input:
             x: Input CT/MRI
             y: Ground Truth Label
             p: Prompt
+            m: Optional Modality flag (1.0 for MRI, 0.0 for CT)
         """
         p_x, p_y = tf.split(p, num_or_size_splits=2, axis=-1)
         
-        # --- x, p_x (Joint Photometric) ---
+        # Determine modality upfront
+        if m is not None:
+            is_mri = tf.reduce_mean(tf.cast(m, tf.float32)) > 0.5
+        else:
+            is_mri = tf.constant(True, dtype=tf.bool)
+        
+        # --- x, p_x (Photometric) ---
         xp = tf.concat([x, p_x], axis=-1)  
         xp = tf.cast(xp, tf.float32)
         
-        if tf.random.uniform([]) < self.prob_photo:
-            xp = self.photo_aug(xp, training=True) 
-            xp = tf.cast(xp, tf.float32)
+        def apply_photo_mri(xp_in):
+            if tf.random.uniform([]) < self.prob_photo:
+                xp_in = self.photo_aug(xp_in, training=True) 
+                xp_in = tf.cast(xp_in, tf.float32)
+            if tf.random.uniform([]) < self.prob_gamma:
+                xp_in = random_gamma(xp_in, min_gamma=self.gamma_range[0], max_gamma=self.gamma_range[1])
+                xp_in = tf.cast(xp_in, tf.float32)
+            return xp_in
             
-        if tf.random.uniform([]) < self.prob_gamma:
-            xp = random_gamma(xp, min_gamma=self.gamma_range[0], max_gamma=self.gamma_range[1])
-            xp = tf.cast(xp, tf.float32)
-            
-        if tf.random.uniform([]) < self.prob_noise:
-            xp = random_gaussian_noise(xp, min_std=self.noise_std_range[0], max_std=self.noise_std_range[1]) 
-            xp = tf.cast(xp, tf.float32)
+        def apply_photo_ct(xp_in):
+            # No Gamma for CT to preserve physical HU correlations
+            if tf.random.uniform([]) < self.prob_photo:
+                xp_in = self.photo_aug(xp_in, training=True) 
+                xp_in = tf.cast(xp_in, tf.float32)
+            return xp_in
+
+        xp = tf.cond(is_mri, lambda: apply_photo_mri(xp), lambda: apply_photo_ct(xp))
             
         x, p_x = tf.split(xp, num_or_size_splits=2, axis=-1)
 
         if len(x.shape) > len(y.shape):
             x = x[..., :1]
-
-        # --- Only x (Independent noise)---
-        if tf.random.uniform([]) < self.prob_independent_noise: 
-            # Very weak noise just to break exact pixel math correlation
-            x = random_gaussian_noise(x, min_std=self.independent_noise_std_range[0], max_std=self.independent_noise_std_range[1])
             
         # --- x, y, p (Joint Geometric)---
         continuous_imgs = tf.concat([x, p_x], axis=-1) 
         categorical_masks = tf.concat([y, p_y], axis=-1)
 
         # Apply synchronized transformations with correct interpolations
-        continuous_imgs, categorical_masks = synced_geometric_aug(continuous_imgs, categorical_masks)
+        if tf.random.uniform([]) < self.prob_geometric:
+            continuous_imgs, categorical_masks = synced_geometric_aug(continuous_imgs, categorical_masks)
 
         # Disassemble back into original variables
         x, p_x = tf.split(continuous_imgs, num_or_size_splits=2, axis=-1)
@@ -456,4 +473,27 @@ class PromptUNetAugmenter:
         y = tf.cast(y, tf.float32)
         p = tf.cast(p, tf.float32)
         
+        # --- Late / Context-Aware Noise (Added after interpolations to prevent blurring) ---
+        def apply_noise_mri(x_in, p_in):
+            # Joint noise
+            if tf.random.uniform([]) < self.prob_noise:
+                xp_in = tf.concat([x_in, p_in[..., 0:1]], axis=-1)
+                # Weaker noise for MRI: adjusted from max=0.06 to max=0.04
+                xp_in = random_gaussian_noise(xp_in, min_std=0.0, max_std=0.04) 
+                x_in, p_x_after = tf.split(xp_in, 2, axis=-1)
+                p_in = tf.concat([p_x_after, p_in[..., 1:2]], axis=-1)
+                 
+            # Independent noise on image only
+            if tf.random.uniform([]) < self.prob_independent_noise:
+                x_in = random_gaussian_noise(x_in, min_std=0.0, max_std=0.01)
+                 
+            return x_in, p_in
+
+        def apply_noise_ct(x_in, p_in):
+            # Turned off completely for CT to preserve explicit HU calibration
+            return x_in, p_in
+
+        # Apply functionally based on evaluated modality flag
+        x, p = tf.cond(is_mri, lambda: apply_noise_mri(x, p), lambda: apply_noise_ct(x, p))
+            
         return x, y, p
