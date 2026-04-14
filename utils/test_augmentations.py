@@ -115,8 +115,7 @@ def main():
         ds, _ = datagenerator.get_data_points(
             max_data_points=args.num_samples, 
             offset=10, 
-            max_number_labels=3, 
-            cropping=False
+            max_number_labels=3
         )
 
         with open(stats_file_path, "w") as f_stats:

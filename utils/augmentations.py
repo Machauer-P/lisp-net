@@ -74,7 +74,7 @@ def synced_geometric_aug(images, masks):
     return tf.squeeze(images_aug, 0), tf.squeeze(masks_aug, 0)
 
 
-def random_gaussian_noise(x, min_std=0.0, max_std=0.06):
+def random_gaussian_noise(x, min_std=0.0, max_std=0.10):
     std = tf.random.uniform([], min_std, max_std)
     noise = tf.random.normal(shape=tf.shape(x), stddev=std)
     return x + noise
@@ -347,8 +347,8 @@ class PromptUNetAugmenter:
                  prob_dropout=0.4,
                  prob_false_pos=0.6,
                  gamma_range=(0.7, 1.5),
-                 noise_std_range=(0.0, 0.06),
-                 independent_noise_std_range=(0.0, 0.015),
+                 noise_std_range=(0.0, 0.10),
+                 independent_noise_std_range=(0.0, 0.010),
                  morph_params=None,
                  false_pos_params=None):
         """
@@ -478,14 +478,13 @@ class PromptUNetAugmenter:
             # Joint noise
             if tf.random.uniform([]) < self.prob_noise:
                 xp_in = tf.concat([x_in, p_in[..., 0:1]], axis=-1)
-                # Weaker noise for MRI: adjusted from max=0.06 to max=0.04
-                xp_in = random_gaussian_noise(xp_in, min_std=0.0, max_std=0.04) 
+                xp_in = random_gaussian_noise(xp_in, min_std=0.0, max_std=0.10) 
                 x_in, p_x_after = tf.split(xp_in, 2, axis=-1)
                 p_in = tf.concat([p_x_after, p_in[..., 1:2]], axis=-1)
                  
             # Independent noise on image only
             if tf.random.uniform([]) < self.prob_independent_noise:
-                x_in = random_gaussian_noise(x_in, min_std=0.0, max_std=0.01)
+                x_in = random_gaussian_noise(x_in, min_std=0.0, max_std=0.010)
                  
             return x_in, p_in
 
