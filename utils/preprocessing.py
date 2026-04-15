@@ -1,6 +1,5 @@
 import numpy as np
 
-
 def universal_normalization(volume, modality="CT"):
     """
     Unified intensity normalization for CT, MRI, and any other modality.
@@ -80,3 +79,36 @@ def universal_normalization(volume, modality="CT"):
 
     # Final symmetric clip to suppress any remaining outliers.
     return np.clip(normalized_volume, -5.0, 5.0).astype(np.float32)
+
+
+# --- Legacy functions ---
+
+def min_max_norm(image, lower_q=0.5, upper_q=99.5):
+    """Robust min-max normalization using quantiles.
+    Use only for evaluating old models (up to version 283).
+    Only makes sense for MRI.
+
+    Args:
+        image: Input image (tensor).
+        lower_q: Lower quantile (default: 0.5).
+        upper_q: Upper quantile (default: 99.5).
+    
+    Returns:
+        Normalized image.
+    """
+    import tensorflow as tf
+    import tensorflow_probability as tfp
+    
+    image = tf.cast(image, tf.float32)
+    flat = tf.reshape(image, [-1])
+
+    # Berechne Quantile
+    q_min = tfp.stats.percentile(flat, lower_q, interpolation='nearest')
+    q_max = tfp.stats.percentile(flat, upper_q, interpolation='nearest')
+
+    # Clip nur innerhalb der Quantile (robust)
+    image = tf.clip_by_value(image, q_min, q_max)
+
+    # Min–Max Normalisierung
+    image = (image - q_min) / (q_max - q_min + 1e-8)
+    return image
