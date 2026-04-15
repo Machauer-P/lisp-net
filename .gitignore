@@ -23,6 +23,7 @@ deployment/*/
 # MLflow
 training/mlruns/
 mlflow.db
+*.yaml
 
 # Optional: IDE/editor stuff
 .vscode/
