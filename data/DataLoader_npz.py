@@ -26,12 +26,12 @@ class DataLoader_npz(DataLoader):
 
     def _to_numpy(self, x):
         """Convert tensor, list, nib or array into numpy array."""
-        import tensorflow as tf
         import nibabel as nib
 
         if isinstance(x, np.ndarray):
             return x
-        if tf.is_tensor(x):
+        # Handles TF tensors, PyTorch tensors, and anything else with .numpy()
+        if hasattr(x, 'numpy') and callable(x.numpy):
             return x.numpy()
         if hasattr(x, "get_fdata"):  # nibabel
             return x.get_fdata()

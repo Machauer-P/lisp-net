@@ -13,11 +13,16 @@ utils/results/
 *.pkl
 *.npz
 *.keras
+*.nii.gz
 
 # Subfolder for deployment contain the tfjs models
 deployment/*/ 
 
 .venv/
+
+# MLflow
+training/mlruns/
+mlflow.db
 
 # Optional: IDE/editor stuff
 .vscode/

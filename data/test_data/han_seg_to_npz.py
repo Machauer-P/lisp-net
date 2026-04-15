@@ -20,6 +20,7 @@ if _project_root not in sys.path:
 
 from data.test_data.ds_handler import save_dataset as _save_dataset_npz
 from utils.resampling import resample_isotropic
+from utils.cropping import crop_to_anatomy, ct_signal_threshold, mri_signal_threshold
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
@@ -222,64 +223,18 @@ class BaseProcessor:
 
     def get_signal_threshold(self, image_array: np.ndarray) -> float:
         """Override in subclass for modality-specific thresholding."""
-        return float(image_array.max()) * 0.02
+        return mri_signal_threshold(image_array)
 
     def crop_to_anatomy(
         self, image_array: np.ndarray, combined_mask: np.ndarray
     ) -> tuple:
-        """
-        Hybrid Cropping Strategy
-        ------------------------
-        Z-axis : intersection of segmentation extent and image-signal extent.
-                 This avoids including empty slices where the image has no data
-                 (fixes the zero-slice problem for registered MRI volumes).
-        X / Y  : image-signal extent (tight crop around body / head).
-        All axes receive a safety *margin*.
-        """
-        margin = self.margin
-        threshold = self.get_signal_threshold(image_array)
-        signal = image_array > threshold
-
-        # --- Z from segmentations ---
-        z_seg = np.where(np.any(combined_mask > 0, axis=(1, 2)))[0]
-
-        # --- Z from image signal ---
-        z_img = np.where(np.any(signal, axis=(1, 2)))[0]
-
-        # --- X / Y from image signal ---
-        y_img = np.where(np.any(signal, axis=(0, 2)))[0]
-        x_img = np.where(np.any(signal, axis=(0, 1)))[0]
-
-        if len(z_seg) == 0 or len(y_img) == 0 or len(x_img) == 0:
-            print("    Warning: empty extent – returning uncropped.")
-            return image_array, combined_mask
-
-        # Start with segmentations
-        z_start, z_end = z_seg[0], z_seg[-1]
-
-        # Apply margin
-        z_min = max(0, z_start - margin)
-        z_max = min(image_array.shape[0] - 1, z_end + margin)
-        
-        # Clamp to image signal bounds to avoid padding into empty FOV / air
-        if len(z_img) > 0:
-            z_min = max(z_min, z_img[0])
-            z_max = min(z_max, z_img[-1])
-            
-        if z_min > z_max:
-            print("    Warning: Segmentations and image signal do not overlap!")
-            return image_array, combined_mask
-            
-        y_min = max(0, y_img[0] - margin)
-        y_max = min(image_array.shape[1] - 1, y_img[-1] + margin)
-            
-        x_min = max(0, x_img[0] - margin)
-        x_max = min(image_array.shape[2] - 1, x_img[-1] + margin)
-
-        cropped_img = image_array[z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
-        cropped_mask = combined_mask[z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
-
-        return cropped_img, cropped_mask
+        """Delegate to the shared utils.cropping implementation."""
+        return crop_to_anatomy(
+            image_array,
+            combined_mask,
+            self.margin,
+            threshold_fn=self.get_signal_threshold,
+        )
 
     # ------------------------------------------------------------------
     # Saving
@@ -384,10 +339,7 @@ class CTProcessor(BaseProcessor):
         return "CT"
 
     def get_signal_threshold(self, image_array: np.ndarray) -> float:
-        vmin = float(image_array.min())
-        if vmin < -500:
-            return -500.0
-        return vmin + 1e-3
+        return ct_signal_threshold(image_array)
 
     def load_image(self, patient_folder, patient_idx):
         ct_paths = glob.glob(os.path.join(patient_folder, "*_IMG_CT.nrrd"))
@@ -413,7 +365,7 @@ class MRIProcessor(BaseProcessor):
 
     def get_signal_threshold(self, image_array: np.ndarray) -> float:
         """MRI: 2 % of max signal separates tissue from background."""
-        return float(image_array.max()) * 0.02
+        return mri_signal_threshold(image_array)
 
     # ------------------------------------------------------------------
     # Rigid registration  (MRI-only)
