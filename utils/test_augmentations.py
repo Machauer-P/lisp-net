@@ -94,8 +94,8 @@ def main():
     
     modalities = ["CT", "MRI"]
     npz_files = {
-        "CT": "data/test_data/HanSeg_CT.npz",
-        "MRI": "data/test_data/HanSeg_MRI.npz"
+        "CT": "data/test_data/han_seg_ct.npz",
+        "MRI": "data/test_data/han_seg_mri.npz"
     }
 
     os.makedirs(args.output_dir, exist_ok=True)
