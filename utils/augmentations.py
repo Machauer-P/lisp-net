@@ -478,13 +478,17 @@ class PromptUNetAugmenter:
             # Joint noise
             if tf.random.uniform([]) < self.prob_noise:
                 xp_in = tf.concat([x_in, p_in[..., 0:1]], axis=-1)
-                xp_in = random_gaussian_noise(xp_in, min_std=0.0, max_std=0.10) 
+                xp_in = random_gaussian_noise(xp_in, 
+                                              min_std=self.noise_std_range[0], 
+                                              max_std=self.noise_std_range[1]) 
                 x_in, p_x_after = tf.split(xp_in, 2, axis=-1)
                 p_in = tf.concat([p_x_after, p_in[..., 1:2]], axis=-1)
                  
             # Independent noise on image only
             if tf.random.uniform([]) < self.prob_independent_noise:
-                x_in = random_gaussian_noise(x_in, min_std=0.0, max_std=0.010)
+                x_in = random_gaussian_noise(x_in, 
+                                             min_std=self.independent_noise_std_range[0], 
+                                             max_std=self.independent_noise_std_range[1])
                  
             return x_in, p_in
 
