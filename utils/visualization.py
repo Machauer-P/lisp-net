@@ -107,9 +107,20 @@ def visualize_a_few_results(model_name: str, loaded_model, ds, offset, img_to_pl
         contrast (float, optional): Contrast adjustment for plots. Defaults to 1.
     """
     from utils.metrics import dice_score_tf
-    for i, (x, y, p) in enumerate(ds):
+    import re
+    is_old = False
+    m_ver = re.search(r'p_unet_(\d+)', model_name)
+    if m_ver and int(m_ver.group(1)) < 292:
+        is_old = True
+
+    for i, item in enumerate(ds):
         if i == img_to_plot:
             break
+
+        if len(item) == 4:
+            x, y, p, m = item
+        else:
+            x, y, p = item
 
         x_np = np.asarray(x)
         p_np = np.asarray(p)
@@ -120,10 +131,28 @@ def visualize_a_few_results(model_name: str, loaded_model, ds, offset, img_to_pl
         if p_np.ndim == 3:
             p_np = p_np[np.newaxis]
 
+        if is_old:
+            from utils.preprocessing import min_max_norm
+            import tensorflow as tf
+            x_np = min_max_norm(x_np).numpy()
+            
+            p_img = min_max_norm(p_np[..., 0:1]).numpy()
+            p_lbl = p_np[..., 1:2]
+            p_np = np.concatenate([p_img, p_lbl], axis=-1)
+
         pred = loaded_model.predict([x_np[0:1, :, :, 0:1], p_np[0:1]])
         pred = np.where(pred < threshold, 0.0, 1.0)
+        
+        # For plot_result RGB stacking, values should ideally be in [0, 1]
+        x_viz = x_np
+        p_viz = p_np
+        if not is_old:
+            x_viz = (x_np - x_np.min()) / (x_np.max() - x_np.min() + 1e-8)
+            p_img_viz = (p_np[..., 0:1] - p_np[..., 0:1].min()) / (p_np[..., 0:1].max() - p_np[..., 0:1].min() + 1e-8)
+            p_lbl_viz = p_np[..., 1:2]
+            p_viz = np.concatenate([p_img_viz, p_lbl_viz], axis=-1)
 
-        plot_result(x, y, p, pred, offset[i], f'Prediction (Number {str(i)})', contrast)
+        plot_result(x_viz, y, p_viz, pred, offset[i], f'Prediction (Number {str(i)})', contrast)
         y_np = np.asarray(y).astype(np.float32)
         print(f"Dice: {dice_score_tf(y_np[..., 0:1], pred):.3f}\n")
 

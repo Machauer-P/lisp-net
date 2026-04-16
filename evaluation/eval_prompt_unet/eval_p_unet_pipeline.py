@@ -4,6 +4,7 @@ import time
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+import re
 
 # Assume this will be run from a notebook within evaluation/eval_prompt_unet
 # so we append the project root directory to sys.path
@@ -37,7 +38,7 @@ class PromptUNetTester:
 
 
     @tf.function
-    def _test_step(self, loaded_model, x, y, p, threshold):
+    def _test_step(self, loaded_model, x, y, p, threshold, is_old_model=False):
         """
         Graph-compiled prediction step for performance.
         Using model(inputs, training=False) is faster than model.predict() in a loop.
@@ -45,6 +46,13 @@ class PromptUNetTester:
         # Ensure proper shapes inside the graph
         x_shaped = shaping(x)
         p_shaped = shaping(p)
+        
+        if is_old_model:
+            from utils.preprocessing import min_max_norm
+            x_shaped = min_max_norm(x_shaped)
+            p_img = min_max_norm(p_shaped[..., 0:1])
+            p_lbl = p_shaped[..., 1:2]
+            p_shaped = tf.concat([p_img, p_lbl], axis=-1)
         
         # Inference (taking the first batch element from shaping)
         pred = loaded_model([x_shaped[0:1, :, :, 0:1], p_shaped[0:1, ...]], training=False)
@@ -59,11 +67,21 @@ class PromptUNetTester:
         start = time.time()
         total_dice = 0.0
         count = 0
+        
+        is_old_model = False
+        m_ver = re.search(r'p_unet_(\d+)', model_name)
+        if m_ver and int(m_ver.group(1)) < 292:
+            is_old_model = True
 
         print(f"Testing {model_name}... ", end="", flush=True)
 
-        for x, y, p in ds:
-            current_dice = self._test_step(loaded_model, x, y, p, threshold)
+        for item in ds:
+            if len(item) == 4:
+                x, y, p, m = item
+            else:
+                x, y, p = item
+                
+            current_dice = self._test_step(loaded_model, x, y, p, threshold, is_old_model)
             total_dice += current_dice
             count += 1
 
@@ -75,7 +93,7 @@ class PromptUNetTester:
         return avg_dice
 
 
-    def run_pipeline(self, dimensions, offsets, models, threshold=0.45, max_number_labels=10, cropping=False, min_crop_size=0.5, cropping_composition=1, num_visualize=0):
+    def run_pipeline(self, dimensions, offsets, models, threshold=0.45, max_number_labels=10, num_visualize=0):
         results = {}
         
         # Initialize DataLoader_npz and DataGenerator
