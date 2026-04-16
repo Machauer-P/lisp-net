@@ -483,3 +483,174 @@ class DataGenerator:
         )
         ds = tf.data.Dataset.from_tensor_slices((x_np, y_np, p_np, m_np))
         return ds, off
+
+    # ---- Single-task generation (for UniverSeg-style eval data) --------- #
+
+    def get_data_points_from_one_task_numpy(self, max_data_points=116, offset=5,
+                                            dimensions=None):
+        """
+        Generate data points that ALL belong to the SAME segmentation task
+        (anatomical structure).  Unlike the multi-task collectors, every sample
+        in the returned arrays shares one segment class, making this suitable
+        for building UniverSeg / few-shot evaluation datasets where the support
+        set and query set must cover the same structure.
+
+        Algorithm
+        ---------
+        1. Pick a random dimension and a random task globally.
+        2. Iterate over all patients; for each one that contains the task,
+           harvest (x, y, prompt) pairs using the existing
+           _create_single_datapoint helper (max_number_labels=1,
+           primary_task=task).
+        3. If ≥ 32 samples are collected → shuffle and return.
+        4. If fewer than 32 → discard and repeat from step 1 with a new task.
+
+        Returns
+        -------
+        x_np   : (N, 128, 128, 1)  float32  — images in [-5, 5]
+        y_np   : (N, 128, 128, 1)  float32  — binary labels
+        p_np   : (N, 128, 128, 2)  float32  — prompts [ref_img | ref_label]
+        m_np   : (N,)              float32  — 0.0 = CT, 1.0 = MRI
+        offsets: list[int]
+        """
+        if dimensions is None:
+            dimensions = ['x', 'y', 'z']
+
+        self.dataloader.current_ids = self.dataloader.train_ids
+        self._norm_cache.clear()
+
+        start = time.time()
+        print("Creating new Data Points ...")
+
+        while True:
+            x_new, y_new, prompt, offset_list, m_new = [], [], [], [], []
+            slices_added = 0
+            step_counter = 0
+
+            # --- 1. Pick a random dimension and task ---------------------
+            d = random.choice(dimensions)
+            task = None
+
+            random.shuffle(self.dataloader.current_ids)
+            for pid in self.dataloader.current_ids:
+                current_dict = self.dataloader.dataset[pid]
+                y_raw = current_dict['segmentations']
+                if isinstance(y_raw, list) and len(y_raw) == 1:
+                    y_raw = np.asarray(y_raw[0])
+
+                if isinstance(y_raw, list):
+                    # Multi-channel: task = 1-based channel index
+                    task = random.randint(1, len(y_raw))
+                    break
+                else:
+                    y_arr = np.asarray(y_raw)
+                    valid = [int(v) for v in np.unique(y_arr) if v != 0]
+                    if valid:
+                        task = random.choice(valid)
+                        break
+
+            if task is None:
+                raise RuntimeError(
+                    "No valid segmentation tasks found in the dataset."
+                )
+            print(f'Current task (Global): {task}')
+
+            # --- 2. Collect slices for this task across all patients -----
+            random.shuffle(self.dataloader.current_ids)
+            for pid in self.dataloader.current_ids:
+                if slices_added >= max_data_points:
+                    break
+                if step_counter >= max_data_points * 20:
+                    break
+
+                current_dict = self.dataloader.dataset[pid]
+                modality_str = current_dict.get('modality', 'UNKNOWN')
+                is_mri = 0.0 if modality_str == 'CT' else 1.0
+
+                x, y = self._prepare_volume(current_dict, pid=pid)
+                if isinstance(y, list) and len(y) == 1:
+                    y = np.asarray(y[0])
+
+                # Skip if in-plane extents are too small
+                dim_idx = 'xyz'.index(d)
+                slice_dims = [s for j, s in enumerate(x.shape) if j != dim_idx]
+                if min(slice_dims) < max(self.height, self.width):
+                    continue
+
+                # Check whether this patient actually contains the task
+                if isinstance(y, list):
+                    if task > len(y):
+                        continue
+                    task_vol = np.asarray(y[task - 1])
+                    if task_vol.sum() == 0:
+                        continue
+                    y_shape = task_vol.shape[dim_idx]
+                else:
+                    y_arr = np.asarray(y)
+                    if task not in np.unique(y_arr):
+                        continue
+                    y_shape = y_arr.shape[dim_idx]
+
+                slice_indices = list(range(y_shape))
+                random.shuffle(slice_indices)
+
+                for i in slice_indices:
+                    if slices_added >= max_data_points:
+                        break
+                    step_counter += 1
+                    if step_counter >= max_data_points * 20:
+                        break
+
+                    r = self._sample_offset(i, offset, y_shape)
+                    if r is None:
+                        continue
+
+                    result = self._create_single_datapoint(
+                        x, y, i, r, d,
+                        max_number_labels=1,
+                        primary_task=task,
+                    )
+                    if result is None:
+                        continue
+
+                    x2d, y2d, p = result
+                    x_new.append(x2d)
+                    y_new.append(y2d)
+                    prompt.append(p)
+                    offset_list.append(r)
+                    m_new.append(is_mri)
+                    slices_added += 1
+
+            # --- 3. Decide: proceed or retry with a new task -------------
+            if slices_added >= 32:
+                if slices_added < max_data_points:
+                    print(
+                        f"Task exhausted, but collected {slices_added} "
+                        f"data points. Proceeding with dataset."
+                    )
+                break
+            else:
+                print("Changed the task, because it was exhausted across all patients.")
+                # Loop to pick a new task
+
+        x_new, y_new, prompt, offset_list, m_new = self._randomize(
+            x_new, y_new, prompt, offset_list, m_new
+        )
+        print(f'It took {time.time() - start:.0f} seconds')
+
+        x_np, y_np, p_np, m_np = self._to_numpy_arrays(x_new, y_new, prompt, m_new)
+        return x_np, y_np, p_np, m_np, offset_list
+
+    def get_data_points_from_one_task(self, max_data_points=116, offset=5,
+                                      dimensions=None):
+        """
+        tf.data.Dataset wrapper around get_data_points_from_one_task_numpy.
+        Yields (x, y, prompt, modality) tuples — kept for backward compatibility.
+        Prefer get_data_points_from_one_task_numpy() for direct numpy usage.
+        """
+        import tensorflow as tf
+        x_np, y_np, p_np, m_np, offset_list = self.get_data_points_from_one_task_numpy(
+            max_data_points, offset, dimensions
+        )
+        ds = tf.data.Dataset.from_tensor_slices((x_np, y_np, p_np, m_np))
+        return ds, offset_list

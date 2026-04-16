@@ -112,3 +112,54 @@ def min_max_norm(image, lower_q=0.5, upper_q=99.5):
     # Min–Max Normalisierung
     image = (image - q_min) / (q_max - q_min + 1e-8)
     return image
+
+
+def shaping(tensor, h=128, w=128, binary=False):
+    """Ensure a tensor has shape (1, H, W, C) for model inference.
+
+    Handles the following input shapes:
+        (H, W, C)  →  (1, H, W, C)
+        (1, H, W)  →  (1, H, W, 1)
+        (H, W)     →  (1, H, W, 1)
+
+    Args:
+        tensor : tf.Tensor or numpy array.
+        h, w   : Target spatial dimensions (default 128×128).
+        binary : Use nearest-neighbor resizing for binary masks.
+
+    Returns:
+        tf.Tensor with shape (1, H, W, 1) or (1, H, W, 2).
+
+    Raises:
+        ValueError if the shape cannot be resolved to a valid inference shape.
+    """
+    import tensorflow as tf
+
+    tensor = tf.cast(tensor, tf.float32)
+
+    if len(tensor.shape) == 2:
+        # (H, W) → (1, H, W, 1)
+        tensor = tensor[tf.newaxis, ..., tf.newaxis]
+
+    elif len(tensor.shape) == 3:
+        s = tensor.shape
+        if s[0] > 1 and s[1] > 1 and s[2] in (1, 2):
+            # (H, W, C) → (1, H, W, C)
+            tensor = tensor[tf.newaxis, ...]
+        elif s[0] == 1 and s[1] > 1 and s[2] > 1:
+            # (1, H, W) → (1, H, W, 1)
+            tensor = tensor[..., tf.newaxis]
+
+    # Resize spatial dims if needed
+    if tensor.shape[1] != h or tensor.shape[2] != w:
+        method = 'nearest' if binary else 'bilinear'
+        tensor = tf.image.resize(tensor, [h, w], method=method)
+
+    # Validate final shape
+    if not (tensor.shape[0] == 1
+            and tensor.shape[1] == h
+            and tensor.shape[2] == w
+            and tensor.shape[3] in (1, 2)):
+        raise ValueError(f'shaping() failed — unexpected result shape: {tensor.shape}')
+
+    return tensor

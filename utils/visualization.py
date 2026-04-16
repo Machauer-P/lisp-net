@@ -127,69 +127,82 @@ def visualize_a_few_results(model_name: str, loaded_model, ds, offset, img_to_pl
         y_np = np.asarray(y).astype(np.float32)
         print(f"Dice: {dice_score_tf(y_np[..., 0:1], pred):.3f}\n")
 
-def plot_samples_from_vol(dataset, idx_list, num_img=10, max_entries=300):
+def visualize_bundle(path_to_npz):
     """
-    Plots a sample grid of images evenly spaced from a volume dataset.
-    Works with both tf.data.Dataset and raw tuples.
-
+    Visualizes the support set and a few query samples from a generated 2D NPZ bundle.
+    
     Args:
-        dataset (tf.data.Dataset/tuple): Dataset containing (image, label) pairs
-                                         or a tuple of (vol_img, vol_labels).
-        idx_list (list): List with the index of the current slice.
-        num_img (int, optional): Number of images to plot. Defaults to 10.
-        max_entries (int, optional): Limit to this many samples for faster plotting. Defaults to 300.
+        path_to_npz (str): Path to the saved .npz bundle file.
     """
-    # Duck-type: tf.data.Dataset has element_spec; plain iterables/tuples do not.
-    is_tf_dataset = hasattr(dataset, 'element_spec')
-
-    if is_tf_dataset:
-        count = sum(1 for _ in dataset.take(max_entries))
-        if count == 0:
-            print("Dataset is empty.")
-            return
-
-        if count < num_img:
-            num_img = count
-
-        indices = [int(i * count / num_img) for i in range(num_img)]
-
-        plt.figure(figsize=(num_img * 3, 3))
-        for idx, (image, label) in enumerate(dataset.take(max_entries)):
-            if idx in indices:
-                plot_idx = indices.index(idx) + 1
-                plt.subplot(1, num_img, plot_idx)
-                plt.imshow(np.asarray(image).squeeze() + np.asarray(label).squeeze())
-                plt.title(str(idx_list[idx]), fontsize=14)
-                plt.axis("off")
-
-        plt.tight_layout()
-        plt.show()
-
-    elif isinstance(dataset, tuple):
-        vol, labels = dataset
-        count = vol.shape[0]
-
-        if count < num_img:
-            num_img = count
-
-        indices = [int(i * vol.shape[0] / num_img) for i in range(num_img)]
-
-        plt.figure(figsize=(num_img * 3, 3))
-        for i in indices:
-            image = vol[i, ...]
-            label = labels[i, ...]
-
-            plot_idx = indices.index(i) + 1
-            plt.subplot(1, num_img, plot_idx)
-            plt.imshow(np.asarray(image).squeeze() + np.asarray(label).squeeze())
-            plt.title(str(idx_list[i]), fontsize=14)
-            plt.axis("off")
-
-        plt.tight_layout()
-        plt.show()
-
-    else:
-        return
+    from data.test_data.ds_handler_2d import load_2d_npz_bundle
+    from pathlib import Path
+    
+    query, support = load_2d_npz_bundle(path_to_npz)
+    
+    print(f"Loaded NPZ bundle: {Path(path_to_npz).name}")
+    print(f"Support Set: sx={support['sx'].shape}, sy={support['sy'].shape}")
+    print(f"Query Set:   x={query['x'].shape}, y={query['y'].shape}, p={query['p'].shape}")
+    
+    # --- 1. Plot a few Support Samples ---
+    s_display = min(4, len(support['sx']))
+    fig, axes = plt.subplots(2, s_display, figsize=(s_display * 3, 6))
+    fig.suptitle("Support Set Samples", fontsize=16)
+    
+    for i in range(s_display):
+        img = support['sx'][i, ..., 0]
+        lbl = support['sy'][i, ..., 0]
+        # Modality: 0=CT, 1=MRI
+        mod_str = "MRI" if support['s_modality'][i] == 1.0 else "CT"
+        
+        ax_img = axes[0, i] if s_display > 1 else axes[0]
+        ax_lbl = axes[1, i] if s_display > 1 else axes[1]
+        
+        ax_img.imshow(img, cmap='gray', vmin=-5, vmax=5)
+        ax_img.set_title(f"Img [{mod_str}]")
+        ax_img.axis('off')
+        
+        ax_lbl.imshow(lbl, cmap='gray', vmin=0, vmax=1)
+        ax_lbl.set_title("Mask")
+        ax_lbl.axis('off')
+    plt.tight_layout()
+    plt.show()
+    
+    # --- 2. Plot a few Query Samples and Prompts ---
+    q_display = min(4, len(query['x']))
+    fig, axes = plt.subplots(q_display, 4, figsize=(12, q_display * 3))
+    fig.suptitle("Query Set Pairs", fontsize=16)
+    
+    for i in range(q_display):
+        x_i = query['x'][i, ..., 0]
+        y_i = query['y'][i, ..., 0]
+        p_img = query['p'][i, ..., 0]
+        p_lbl = query['p'][i, ..., 1]
+        offset = query['offset'][i]
+        mod_str = "MRI" if query['modality'][i] == 1.0 else "CT"
+        
+        ax_pimg = axes[i, 0] if q_display > 1 else axes[0]
+        ax_plbl = axes[i, 1] if q_display > 1 else axes[1]
+        ax_x    = axes[i, 2] if q_display > 1 else axes[2]
+        ax_y    = axes[i, 3] if q_display > 1 else axes[3]
+        
+        ax_pimg.imshow(p_img, cmap='gray', vmin=-5, vmax=5)
+        ax_pimg.set_title(f"Prompt Img [{mod_str}]\n(Offset: {offset})")
+        ax_pimg.axis('off')
+        
+        ax_plbl.imshow(p_lbl, cmap='gray', vmin=0, vmax=1)
+        ax_plbl.set_title("Prompt Mask")
+        ax_plbl.axis('off')
+        
+        ax_x.imshow(x_i, cmap='gray', vmin=-5, vmax=5)
+        ax_x.set_title("Target Img")
+        ax_x.axis('off')
+        
+        ax_y.imshow(y_i, cmap='gray', vmin=0, vmax=1)
+        ax_y.set_title("Target Mask")
+        ax_y.axis('off')
+        
+    plt.tight_layout()
+    plt.show()
 
 def visualize_img_with_mask(img, mask, alpha=0.5):
     """

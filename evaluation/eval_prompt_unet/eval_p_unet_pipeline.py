@@ -89,13 +89,10 @@ class PromptUNetTester:
             
             # 1. Generate Dataset for this offset
             test_ds, offset_list = datagenerator.get_data_points(
-                max_data_points=self.max_data_points, 
-                offset=off, 
-                max_number_labels=max_number_labels, 
-                dimensions=dimensions, 
-                cropping=cropping,
-                min_crop_size=min_crop_size, 
-                cropping_composition=cropping_composition
+                max_data_points=self.max_data_points,
+                offset=off,
+                max_number_labels=max_number_labels,
+                dimensions=dimensions,
             )
             
             # Cache for visualizations to avoid reloading models twice
