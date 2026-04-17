@@ -81,6 +81,40 @@ def universal_normalization(volume, modality="CT"):
     return np.clip(normalized_volume, -5.0, 5.0).astype(np.float32)
 
 
+def universeg_normalization(volume, modality="CT"):
+    """
+    Intensity normalization matching UniverSeg's training convention.
+    Produces float32 values in [0, 1].
+
+    Applied to the raw 3-D volume so that cross-slice relative brightness is
+    preserved — identical to how UniverSeg was trained.
+
+    CT  : clip to [-500, 1000] HU (soft-tissue window used by UniverSeg)
+           → min-max to [0, 1]:  (HU + 500) / 1500
+    MRI : clip to 0.5–99.5 percentile of the full volume
+           → min-max to [0, 1]
+
+    Args:
+        volume   : np.ndarray of any shape — RAW intensities (before any
+                   z-score or other normalization is applied).
+        modality : str — "CT" or anything else for MRI/other.
+
+    Returns:
+        np.ndarray (float32), values clipped to [0, 1].
+    """
+    volume = np.asarray(volume, dtype=np.float32)
+
+    if modality == "CT":
+        v_min, v_max = -500.0, 1000.0
+        volume = np.clip(volume, v_min, v_max)
+    else:  # MRI / Other
+        v_min = float(np.percentile(volume, 0.5))
+        v_max = float(np.percentile(volume, 99.5))
+        volume = np.clip(volume, v_min, v_max)
+
+    return ((volume - v_min) / (v_max - v_min + 1e-8)).astype(np.float32)
+
+
 # --- Legacy functions ---
 
 def min_max_norm(image, lower_q=0.5, upper_q=99.5):

@@ -70,7 +70,7 @@ def gen_save_ds(dg, path, ds_name, offset_val,
     for i in range(num_ds):
         print(f"\nGenerating dataset {i + 1}/{num_ds}...")
 
-        x_np, y_np, p_np, m_np, offset_list = dg.get_data_points_from_one_task_numpy(
+        x_np, y_np, p_np, x_u_np, m_np, offset_list = dg.get_data_points_from_one_task_numpy(
             max_data_points=max_data_points + len_p_set,
             offset=offset_val,
             dimensions=dimensions,
@@ -86,12 +86,14 @@ def gen_save_ds(dg, path, ds_name, offset_val,
             continue
 
         support_data = {
-            'sx':         x_np[:support_end],
+            'sx':         x_np[:support_end],     # Prompt-UNet support (z-score [-5,5])
+            'sx_u':       x_u_np[:support_end],   # UniverSeg support (min-max [0,1])
             'sy':         y_np[:support_end],
             's_modality': m_np[:support_end],
         }
         query_data = {
             'x':        x_np[query_start:],
+            'x_u':      x_u_np[query_start:],     # UniverSeg query (min-max [0,1])
             'y':        y_np[query_start:],
             'p':        p_np[query_start:],
             'offset':   np.array(offset_list[query_start:], dtype=np.int32),

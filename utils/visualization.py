@@ -168,17 +168,22 @@ def visualize_bundle(path_to_npz):
     
     query, support = load_2d_npz_bundle(path_to_npz)
     
+    sx_key = 'sx' if support['sx'] is not None else 'sx_u'
+    sx_name = "sx (z-score)" if sx_key == 'sx' else "sx_u (min-max)"
+    
     print(f"Loaded NPZ bundle: {Path(path_to_npz).name}")
-    print(f"Support Set: sx={support['sx'].shape}, sy={support['sy'].shape}")
+    print(f"Support Set: {sx_name}={support[sx_key].shape}, sy={support['sy'].shape}")
     print(f"Query Set:   x={query['x'].shape}, y={query['y'].shape}, p={query['p'].shape}")
     
     # --- 1. Plot a few Support Samples ---
-    s_display = min(4, len(support['sx']))
+    s_display = min(4, len(support[sx_key]))
     fig, axes = plt.subplots(2, s_display, figsize=(s_display * 3, 6))
-    fig.suptitle("Support Set Samples", fontsize=16)
+    fig.suptitle(f"Support Set Samples ({sx_name})", fontsize=16)
+    
+    vmin, vmax = (-5, 5) if sx_key == 'sx' else (0, 1)
     
     for i in range(s_display):
-        img = support['sx'][i, ..., 0]
+        img = support[sx_key][i, ..., 0]
         lbl = support['sy'][i, ..., 0]
         # Modality: 0=CT, 1=MRI
         mod_str = "MRI" if support['s_modality'][i] == 1.0 else "CT"
@@ -186,7 +191,7 @@ def visualize_bundle(path_to_npz):
         ax_img = axes[0, i] if s_display > 1 else axes[0]
         ax_lbl = axes[1, i] if s_display > 1 else axes[1]
         
-        ax_img.imshow(img, cmap='gray', vmin=-5, vmax=5)
+        ax_img.imshow(img, cmap='gray', vmin=vmin, vmax=vmax)
         ax_img.set_title(f"Img [{mod_str}]")
         ax_img.axis('off')
         

@@ -6,7 +6,7 @@ data/test_data/HanSeg/
 data/test_data/2d/
 
 # Augm test results
-utils/results/
+utils/augmentation_results/
 
 # Files
 training/p_unet_21_extracted_2.py

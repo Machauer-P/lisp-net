@@ -17,7 +17,7 @@ import time
 import numpy as np
 from scipy.ndimage import label as scipy_label
 
-from utils.preprocessing import universal_normalization
+from utils.preprocessing import universal_normalization, universeg_normalization
 
 
 class DataGenerator:
@@ -42,6 +42,8 @@ class DataGenerator:
         # Per-call normalization cache: pid → (x_norm_np, segs)
         # Cleared at the start of every get_data_points* call.
         self._norm_cache: dict = {}
+        # Per-call UniverSeg normalization cache: pid → x_u_np
+        self._universeg_cache: dict = {}
 
     # ------------------------------------------------------------------ #
     #  Internal helpers                                                    #
@@ -75,6 +77,23 @@ class DataGenerator:
             self._norm_cache[pid] = result
         return result
 
+    def _prepare_universeg_volume(self, current_dict, pid=None):
+        """
+        Apply UniverSeg normalization to the raw volume and cache by pid.
+        Reads current_dict['image'] directly to get RAW intensities before
+        our z-score is applied — call alongside _prepare_volume.
+        """
+        if pid is not None and pid in self._universeg_cache:
+            return self._universeg_cache[pid]
+
+        x        = np.asarray(current_dict['image'], dtype=np.float32)
+        modality = current_dict.get('modality', 'UNKNOWN')
+        x_u      = universeg_normalization(x, modality=modality)
+
+        if pid is not None:
+            self._universeg_cache[pid] = x_u
+        return x_u
+
     def _pad_if_needed(self, arr, target, pad_val=0.0):
         """Zero-pad a 2-D array symmetrically so both dims >= target."""
         h, w   = arr.shape
@@ -85,17 +104,23 @@ class DataGenerator:
         return np.pad(arr, ((top, bot), (left, right)),
                       mode='constant', constant_values=pad_val)
 
-    def _extract_patch_2d(self, x_2d, total_label, x_2d_r, total_label_r):
+    def _extract_patch_2d(self, x_2d, total_label, x_2d_r, total_label_r,
+                           x_u_2d=None, x_u_2d_r=None):
         """
         Label-guided 128×128 crop of a 2-D slice pair.
 
         The crop window is guaranteed to overlap with the bounding box of
         `total_label`.  The reference slice is cropped at the same position.
 
+        Optional: if `x_u_2d` / `x_u_2d_r` (UniverSeg-normalised slices) are
+        provided, the SAME random crop is applied to them and they are returned
+        as two additional (128, 128, 1) float32 arrays.
+
         Returns
         -------
-        x_2d, x_2d_r        : shape (128, 128, 1) float32
-        total_label, total_label_r : shape (128, 128, 1) float32
+        Without x_u:  (x_2d, total_label, x_2d_r, total_label_r)
+        With    x_u:  above + (x_u_2d_cropped, x_u_2d_r_cropped)
+        All outputs have shape (128, 128, 1) float32.
         """
         ps = self.height  # patch size (128)
 
@@ -103,6 +128,11 @@ class DataGenerator:
         x_2d_r      = self._pad_if_needed(x_2d_r,      ps, pad_val=-5.0)
         total_label = self._pad_if_needed(total_label,  ps, pad_val=0.0)
         total_label_r = self._pad_if_needed(total_label_r, ps, pad_val=0.0)
+
+        # pad_val=0.0: background is 0 in UniverSeg's [0, 1] space
+        if x_u_2d is not None:
+            x_u_2d   = self._pad_if_needed(x_u_2d,   ps, pad_val=0.0)
+            x_u_2d_r = self._pad_if_needed(x_u_2d_r, ps, pad_val=0.0)
 
         h, w = x_2d.shape
 
@@ -135,12 +165,19 @@ class DataGenerator:
         total_label_r = crop(total_label_r)
 
         # Add channel dim → (128, 128, 1)
-        return (
+        result = (
             x_2d[..., np.newaxis].astype(np.float32),
             total_label[..., np.newaxis].astype(np.float32),
             x_2d_r[..., np.newaxis].astype(np.float32),
             total_label_r[..., np.newaxis].astype(np.float32),
         )
+
+        if x_u_2d is not None:
+            return result + (
+                crop(x_u_2d)[..., np.newaxis].astype(np.float32),
+                crop(x_u_2d_r)[..., np.newaxis].astype(np.float32),
+            )
+        return result
 
     def _sample_offset(self, i, offset, length):
         """Return a random signed offset ±[1..offset] that stays in-bounds."""
@@ -246,12 +283,17 @@ class DataGenerator:
             result = result + l
         return result
 
-    def _create_single_datapoint(self, x, y, i, r, d, max_number_labels, primary_task):
+    def _create_single_datapoint(self, x, y, i, r, d, max_number_labels, primary_task,
+                                  x_u=None):
         """
-        Attempt to build one (x_2d, y_2d, prompt) tuple.
+        Attempt to build one (x_2d, y_2d, prompt[, x_u_2d]) tuple.
 
         Returns None if the candidate slice pair doesn't pass quality checks.
         All arrays are float32 numpy, shapes (128,128,1) / (128,128,2).
+
+        If `x_u` (UniverSeg-normalised volume) is provided, the same crop is
+        applied to extract `x_u_2d` (128,128,1) in [0, 1] and it is appended
+        to the return tuple:  (x_2d, y_2d, prompt, x_u_2d).
         """
         if isinstance(y, list):
             y_2d   = [self._get_2d_slice(np.asarray(seg), i,   d) for seg in y]
@@ -270,9 +312,19 @@ class DataGenerator:
         x_2d   = self._get_2d_slice(x, i,   d)
         x_2d_r = self._get_2d_slice(x, i+r, d)
 
-        x_2d, total_label, x_2d_r, total_label_r = self._extract_patch_2d(
-            x_2d, total_label, x_2d_r, total_label_r
+        # Extract UniverSeg slices at the SAME positions before the shared crop
+        x_u_2d   = self._get_2d_slice(x_u, i,   d) if x_u is not None else None
+        x_u_2d_r = self._get_2d_slice(x_u, i+r, d) if x_u is not None else None
+
+        patch = self._extract_patch_2d(
+            x_2d, total_label, x_2d_r, total_label_r,
+            x_u_2d, x_u_2d_r,
         )
+
+        if x_u is not None:
+            x_2d, total_label, x_2d_r, total_label_r, x_u_2d, x_u_2d_r = patch
+        else:
+            x_2d, total_label, x_2d_r, total_label_r = patch
 
         # Post-crop quality check: both masks must be visible after cropping
         if (np.count_nonzero(total_label)   < self.minimum_pixel or
@@ -281,6 +333,9 @@ class DataGenerator:
 
         # Prompt = [reference_image_slice | reference_label_slice] stacked on C
         p = np.concatenate([x_2d_r, total_label_r], axis=-1)  # (128,128,2)
+
+        if x_u is not None:
+            return x_2d, total_label, p, x_u_2d   # x_u_2d_r not stored (not used by any model)
         return x_2d, total_label, p  # all (128,128,1/2) float32
 
     def _process_dimension(self, x, y, d, offset, max_number_labels,
@@ -499,17 +554,16 @@ class DataGenerator:
         ---------
         1. Pick a random dimension and a random task globally.
         2. Iterate over all patients; for each one that contains the task,
-           harvest (x, y, prompt) pairs using the existing
-           _create_single_datapoint helper (max_number_labels=1,
-           primary_task=task).
-        3. If ≥ 32 samples are collected → shuffle and return.
+           harvest (x, y, prompt, x_u) tuples using _create_single_datapoint.
+        3. If >= 32 samples collected → shuffle and return.
         4. If fewer than 32 → discard and repeat from step 1 with a new task.
 
         Returns
         -------
-        x_np   : (N, 128, 128, 1)  float32  — images in [-5, 5]
+        x_np   : (N, 128, 128, 1)  float32  — z-score images    [-5, 5]
         y_np   : (N, 128, 128, 1)  float32  — binary labels
         p_np   : (N, 128, 128, 2)  float32  — prompts [ref_img | ref_label]
+        x_u_np : (N, 128, 128, 1)  float32  — UniverSeg images  [0, 1]
         m_np   : (N,)              float32  — 0.0 = CT, 1.0 = MRI
         offsets: list[int]
         """
@@ -518,12 +572,13 @@ class DataGenerator:
 
         self.dataloader.current_ids = self.dataloader.train_ids
         self._norm_cache.clear()
+        self._universeg_cache.clear()
 
         start = time.time()
         print("Creating new Data Points ...")
 
         while True:
-            x_new, y_new, prompt, offset_list, m_new = [], [], [], [], []
+            x_new, y_new, prompt, offset_list, m_new, xu_new = [], [], [], [], [], []
             slices_added = 0
             step_counter = 0
 
@@ -567,7 +622,8 @@ class DataGenerator:
                 modality_str = current_dict.get('modality', 'UNKNOWN')
                 is_mri = 0.0 if modality_str == 'CT' else 1.0
 
-                x, y = self._prepare_volume(current_dict, pid=pid)
+                x, y  = self._prepare_volume(current_dict, pid=pid)
+                x_u   = self._prepare_universeg_volume(current_dict, pid=pid)
                 if isinstance(y, list) and len(y) == 1:
                     y = np.asarray(y[0])
 
@@ -609,14 +665,16 @@ class DataGenerator:
                         x, y, i, r, d,
                         max_number_labels=1,
                         primary_task=task,
+                        x_u=x_u,
                     )
                     if result is None:
                         continue
 
-                    x2d, y2d, p = result
+                    x2d, y2d, p, xu_2d = result
                     x_new.append(x2d)
                     y_new.append(y2d)
                     prompt.append(p)
+                    xu_new.append(xu_2d)
                     offset_list.append(r)
                     m_new.append(is_mri)
                     slices_added += 1
@@ -633,13 +691,19 @@ class DataGenerator:
                 print("Changed the task, because it was exhausted across all patients.")
                 # Loop to pick a new task
 
-        x_new, y_new, prompt, offset_list, m_new = self._randomize(
-            x_new, y_new, prompt, offset_list, m_new
-        )
+        # Shuffle all six lists in unison
+        combined = list(zip(x_new, y_new, prompt, offset_list, m_new, xu_new))
+        random.shuffle(combined)
+        if combined:
+            x_new, y_new, prompt, offset_list, m_new, xu_new = zip(*combined)
+            x_new, y_new, prompt = list(x_new), list(y_new), list(prompt)
+            offset_list, m_new, xu_new = list(offset_list), list(m_new), list(xu_new)
+
         print(f'It took {time.time() - start:.0f} seconds')
 
         x_np, y_np, p_np, m_np = self._to_numpy_arrays(x_new, y_new, prompt, m_new)
-        return x_np, y_np, p_np, m_np, offset_list
+        x_u_np = np.stack(xu_new).astype(np.float32)
+        return x_np, y_np, p_np, x_u_np, m_np, offset_list
 
     def get_data_points_from_one_task(self, max_data_points=116, offset=5,
                                       dimensions=None):
@@ -647,10 +711,15 @@ class DataGenerator:
         tf.data.Dataset wrapper around get_data_points_from_one_task_numpy.
         Yields (x, y, prompt, modality) tuples — kept for backward compatibility.
         Prefer get_data_points_from_one_task_numpy() for direct numpy usage.
+
+        Note: x_u_np (UniverSeg normalisation) is available from
+        get_data_points_from_one_task_numpy() but is not included in the
+        tf.data.Dataset as it is only needed for evaluation bundle generation.
         """
         import tensorflow as tf
-        x_np, y_np, p_np, m_np, offset_list = self.get_data_points_from_one_task_numpy(
-            max_data_points, offset, dimensions
-        )
+        x_np, y_np, p_np, x_u_np, m_np, offset_list = \
+            self.get_data_points_from_one_task_numpy(
+                max_data_points, offset, dimensions
+            )
         ds = tf.data.Dataset.from_tensor_slices((x_np, y_np, p_np, m_np))
         return ds, offset_list
