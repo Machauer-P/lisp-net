@@ -1,0 +1,107 @@
+# Model Development Changelog
+
+This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies. 
+
+## [v301] - SE-Block Ablation
+**Architecture**
+- Reverted Squeeze-and-Excitation (SE) blocks from v300.
+- All other v300 features (wider filters, hybrid convolutions) remain.
+
+## [v300] - Architecture Expansion & New LR Schedule
+*Implementation: `prompt_unet_300.py`*
+
+**Architecture**
+- **Wider Model:** Increased the filter schedule to `[48, 96, 192, 256, 384]` (yielding ~15M parameters).
+- **Hybrid Convolutions:** Used standard `Conv2D` at deeper stages (4 & 5) instead of Separable Convolutions for better and richer cross-channel mixing at high channel counts, while keeping `SeparableConv2D` for earlier, shallower stages.
+- **SE Attention:** Added Squeeze-and-Excitation channel attention on prompt skip connections.
+
+**Training & Scheduling**
+- **Three-Phase LR Schedule:** Implemented `WarmupFlatCosineDecay`:
+  - *Warmup:* 50 epochs (1e-6 → 1e-3).
+  - *Flat:* 1500 epochs (1e-3).
+  - *Cosine Decay:* 2450 epochs (1e-3 → 1e-5).
+- **Dataset Refresh:** Reduced `new_ds` cadence from 75 to 50 epochs to prevent overfitting and refresh data exposure.
+
+**Augmentation Tuning**
+- **Reduced Probabilities:** Reduced `prob_geometric` to 0.50 and `prob_morph` to 0.30 (which additionally provides CPU optimization).
+- **Gamma Range:** Narrowed gamma augmentation range to `(0.85, 1.25)` to prevent distribution drift from the normalized z-score space.
+
+## [v292] - Preprocessing & Datagen Overhaul
+*Implementation: `prompt_unet_292.py`, `train.py`*
+
+**Preprocessing**
+- **Isotropic Resampling:** Applied to volumes prior to normalization.
+- **Z-Score Normalization:** 
+  - *CT:* Hardcoded stats (Mean: -15, Std: 160) with clipping between `[-1000, 1000]`.
+  - *MRI:* Foreground-only statistics with 0.5% – 99.5% percentile clipping.
+- **Data Loading:** Switched to efficient `.npz` based data loaders rather than legacy structures.
+
+**Data Generator & Stability**
+- **OOM Fix & Pure NumPy:** The entire data processing pipeline was rewritten (`DataGenerator.py`) to map exclusively to NumPy arrays across the CPU, directly returning stacked arrays to bypass TensorFlow graph node registration per-call, mitigating severe GPU/CPU memory fragmentation and Out-of-Memory errors.
+- **2D Patch-Based Extraction:** Instead of performing random 3D volume crops or scaling images linearly, slices are extracted as **exact 128x128 patches**. This uses label-guided logic to ensure patches capture the target structure while maintaining a 1:1 pixel ratio (no rescaling). Dimensions smaller than 128 are symmetrically padded (`-5.0` for images, `0.0` for masks) to prevent spatial distortion.
+- **Processing & Caching:** Generates implement a swift per-call normalization cache (`_norm_cache`) resolving redundant volume operations for matched patients, additionally tagging explicit output modalities (`m_np` mapped `0.0 = CT`, `1.0 = MRI`).
+- **Filtering:** Samples falling below defined axis thresholds are comprehensively ignored to prevent artifact induction.
+
+**Codebase Refactoring**
+- Refactored logic out of notebooks into standalone `.py` files (`train.py`, `optimizer.py`, model definitions) while keeping notebooks solely for experimentation and evaluation pipelines.
+
+## [v282 / v283] - Efficiency & Optimization
+*Implementation: `p_unet_282.ipynb`, `p_unet_283.ipynb`*
+
+**Efficiency Improvements**
+- **Mixed Precision:** Enabled `mixed_float16` training global policy.
+- **Speed Improvements:** Switched to Depthwise `SeparableConv2D` globally reducing computation costs, and optimized graph executions.
+
+**Architecture Tweaks**
+- Built an **Asymmetric U-Net** structure, using a lighter decoder to save parameters while maintaining representational capacity.
+- **Thinned Bottleneck:** Reduced parameter weight in the model bottleneck.
+- **Upsampling Changes:** Replaced generic `Conv2DTranspose` configurations with math-based scaling and lighter alternatives (e.g. `SeparableConv2D` followed by UpSampling).
+
+**Training & Scheduling**
+- **New Scheduler (v282):** Implemented Keras 3 `CosineDecay` with built-in warmup to stabilize mixed precision training gradients:
+  - *Initial LR:* `1e-6`
+  - *Warmup:* 50 epochs ramping up to `1e-3` (peak).
+  - *Decay Phase:* Smooth cosine curve down over 4950 epochs to a final LR of `1e-5` (1% of peak).
+- **v283 Specific:** Reverted to the older `ExponentialDecay` model scheduler version.
+
+## [v272] - Data Distribution Tuning
+*Implementation: `p_unet_272.ipynb`*
+
+**Dataset Composition**
+- Added CT dataset (Total Segmentor) (45 unique CT, 61 MRI).
+
+**Augmentation Pipeline Details**
+- Removed double blurring effects.
+- Increased the strength parameter of Gaussian blur.
+- Implemented a significant overall increase in general photometric and geometric augmentation probabilities.
+
+## [v21] - Integration Phase (Legacy Architecture)
+*Implementation: `p_unet_21.ipynb`*
+
+**History & Goal**
+- Merged the augmentation strategy from v1.6.5 with the network structure additions of v2.0 (Dropout). Focused training restricted strictly to the NAKO dataset.
+
+**Architecture (Dual-Encoder Prompt-UNet)**
+- **Filter Schedule:** Followed traditional uniform multiplier progression `[32, 64, 128, 256, 512]` via standard `Conv2D`. 
+- **Prompt Encoder:** Separate 5-stage feature extraction encoding path mapping the two-channel prompt mask context.
+- **Image Input Encoder:** Main 5-stage sequential encoder for the target image. It featured a conditioning mechanism adding (`layers.Add()`) prompt feature maps to its own feature abstractions at each stage.
+- **Bottleneck:** Contained an expanded 1024 filter depth layout with increased `Dropout` (0.2 parameter compared to 0.1 in shallower tiers).
+- **Decoder:** Emphasized symmetric transposed convolutions (`Conv2DTranspose`) mapped back to `[512, 256, 128, 64, 32]` while concatenating features originating from the input image encoder path. 
+- **Layers Structure:** Relied on `BatchNormalization` followed directly by `LeakyReLU`.
+
+**Training & Schedulers**
+- **Loss:** `binary_crossentropy`.
+- Introduced Training Schedulers: relied on TensorFlow's built-in `ExponentialDecay`. Learning rate began at `0.001` fading out at a decay rate of `0.85`, configured systematically to run every `2000` steps (`decay_steps=steps_per_epoch*decay_epochs`). 
+
+**Data & Augmentation Strategy**
+- **Legacy Datagen Framework (`DataGenerator_old.py`):** Structured fundamentally using `tf.data.Dataset` arrays running nested mapping instances inside `tf.function` iterations recursively.
+  - Slices persistently cached `tf.tensors` natively inside its core loops dynamically driving Out-of-Memory spikes across prolonged generation tasks.
+  - **Volume Cropping & Rescaling:** Samples were generated by first taking a **random 3D volume crop** (of arbitrary size) from the original scan and then applying **Nearest-Neighbor Resizing** (`tf.image.resize`) to force the resulting slices into $128 \times 128$. This approach introduced significant spatial distortion as anatomy was squashed or stretched depending on the initial crop dimensions.
+  - Implemented variable slice distance offsets mimicking prompt trace variance.
+- Augmentations operated at a low application baseline (10% standard chance `0.1`), configured separately per inputs:
+  - **Photometric:** Applied strictly to target image (`x`): RandomBrightness, RandomContrast, Lambda-injected noise, and GaussianNoise.
+  - **Geometric:** Applied coherently across spatial domains (`x, y, p`): RandomFlip, RandomRotation (with `reflect` fill and `nearest` interpolation), RandomZoom, RandomTranslation. 
+  - **Prompt Morphological Distortions:** Applied rigorously to simulate human error on the `prompt (p)`:
+    - *Cut-out:* Selectively clearing max 20% fraction of positive prompt slices to spoof unnoted areas.
+    - *False Positives:* Spraying random positive masks outside target areas.
+    - *Morph:* Emphasizing selective erosion & dilation via custom tensor map injections restricted cleanly by structure size bounding (`min_size=30`) and scaled kernel sizes `max_kernel=2`.
