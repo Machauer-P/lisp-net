@@ -11,14 +11,14 @@ Augmentation Testing Script for PromptUNet.
 Generates visualizations and statistics for both CT and MRI data.
 
 Usage Examples:
-    # Run with default probabilities (1.0) and default output (utils/results)
+    # Run with default probabilities (1.0) and default output (utils/augmentation_results)
     python utils/test_augmentations.py
 
     # Run with a global probability of 0.5 for all augmentations
     python utils/test_augmentations.py --prob 0.5
 
     # Run with custom output directory and specific probability overrides
-    python utils/test_augmentations.py --output_dir utils/results/noise
+    python utils/test_augmentations.py --output_dir utils/augmentation_results/noise
         --prob_photo 0.0 
         --prob_gamma 0.0 
         --prob_noise 1.0 
@@ -59,7 +59,7 @@ def print_statistics(name, tensor, file=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Test PromptUNet Data Augmentations")
-    parser.add_argument("--output_dir", type=str, default="utils/results", help="Directory to save plots and stats")
+    parser.add_argument("--output_dir", type=str, default="utils/augmentation_results", help="Directory to save plots and stats")
     parser.add_argument("--num_samples", type=int, default=10, help="Number of samples per modality")
     parser.add_argument("--prob", type=float, default=1.0, help="Global default probability for all augmentations")
     
