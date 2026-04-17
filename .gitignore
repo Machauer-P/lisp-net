@@ -8,6 +8,10 @@ data/test_data/2d/
 # Augm test results
 utils/results/
 
+# Files
+training/p_unet_21_extracted_2.py
+*.pdf
+
 # Large files
 *.zip
 *.pkl
@@ -18,6 +22,10 @@ utils/results/
 # Subfolder for deployment contain the tfjs models
 deployment/*/ 
 
+# Checkpoints
+.ipynb_checkpoints/
+
+# Virtual environment
 .venv/
 
 # MLflow
