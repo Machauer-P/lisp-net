@@ -140,7 +140,7 @@ def visualize_a_few_results(model_name: str, loaded_model, ds, offset, img_to_pl
             p_lbl = p_np[..., 1:2]
             p_np = np.concatenate([p_img, p_lbl], axis=-1)
 
-        pred = loaded_model.predict([x_np[0:1, :, :, 0:1], p_np[0:1]])
+        pred = loaded_model.predict([x_np[0:1, :, :, 0:1], p_np[0:1]], verbose=0)
         pred = np.where(pred < threshold, 0.0, 1.0)
         
         # For plot_result RGB stacking, values should ideally be in [0, 1]
