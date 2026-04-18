@@ -2,6 +2,42 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies. 
 
+## [v312] - Float32 Ablation Variant
+*Implementation: `prompt_unet_312.py`, `p_unet_312.ipynb`*
+
+**Architecture**
+- **No Mixed Precision:** Disabled mixed precision training (pure `float32`). This is a direct ablation against v310 to verify if loss-scale under/overflows in float16 are causing transient instability issues when paired with heavy scale-augmentation.
+- **Identical to v310 otherwise:** Uses pure `Conv2D` across all stages, maintains SE attention removal, and implements the identical scale augmentation and leakage fix.
+
+## [v311] - SE Attention Ablation Variant
+*Implementation: `prompt_unet_311.py`, `p_unet_311.ipynb`*
+
+**Architecture**
+- **SE Attention Re-enabled:** Restored the Squeeze-and-Excitation channel gating on all prompt skip connections. This provides a direct A/B ablation test against v310 to determine if SE channel-attention provides measurable benefits under the new scale-augmented data distribution.
+- **Identical to v310 otherwise:** Uses pure `Conv2D` across all stages, maintains `mixed_float16` precision, and implements the identical scale augmentation (50% random quadratic crop) and leakage fix (origin anchored on `total_label_r`).
+
+## [v310] - Pure Conv2D, No SE, Scale Augmentation + Leakage Fix
+*Implementation: `prompt_unet_310.py`, `p_unet_310.ipynb`*
+
+**Architecture**
+- **No SE Attention:** Removed Squeeze-and-Excitation channel gates from all prompt skip connections. Prompt skips are now fused via a plain `Add()` layer (pre-v300 style). Motivation: ablate whether SE actually contributes under the new scale-augmented distribution.
+- **Pure Conv2D:** Replaced `SeparableConv2D` at all encoder/decoder stages with standard `Conv2D`. In v300, SeparableConv was used at shallow stages 1–3; v310 removes it everywhere. Rationale: scale augmentation exposes shallow stages to both fine-grained (128×128 literal crop) and downsampled coarser textures (up to 256→128px), violating the spatial/channel independence assumption underlying separable convolutions.
+- **Mixed Precision retained** — Same `mixed_float16` policy as v300. `Adam` is wrapped with `LossScaleOptimizer` for gradient stability.
+- Filter schedule unchanged: `[48, 96, 192, 256, 384]` (~15 M parameters).
+
+**DataGenerator (`DataGenerator.py`) — Scale Augmentation**
+- Every call to `_extract_patch_2d` now randomly selects one of two spatial sampling modes:
+  - **50 % — Literal 128×128 crop:** Preserves native scanner pixel spacing (1×1 mm). Teaches high-resolution boundary detail.
+  - **50 % — Random quadratic crop → bilinear resize to 128×128:** Crop size sampled uniformly from `[128 px, min(256 px, image_size)]`. Bilinear resize for images, nearest-neighbor for masks. The 2× maximum downsample ratio ensures small structures remain ≥ ~5 px after resize, keeping them detectable by the network.
+- The same random crop size and origin are applied consistently to `x`, `y`, `x_r`, `y_r`, and the UniverSeg-normalised variants (`x_u`).
+
+**DataGenerator (`DataGenerator.py`) — Leakage Fix**
+- Previously, the `_extract_patch_2d` crop bounding-box origin was computed from `total_label` (the unknown query ground-truth), causing the spatial context to be perfectly centered on the hidden target.
+- The origin is now computed **only from `total_label_r`** (the Support/Prompt label).
+- In an interactive-segmentation setting the clinician always provides the prompt, so anchoring the crop to the prompt label is clinically realistic **and** avoids any data leakage into the spatial sampling decision.
+
+---
+
 ## [v301] - SE-Block Ablation
 **Architecture**
 - Reverted Squeeze-and-Excitation (SE) blocks from v300.

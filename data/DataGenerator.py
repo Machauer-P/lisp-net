@@ -107,26 +107,33 @@ class DataGenerator:
     def _extract_patch_2d(self, x_2d, total_label, x_2d_r, total_label_r,
                            x_u_2d=None, x_u_2d_r=None):
         """
-        Label-guided 128×128 crop of a 2-D slice pair.
-
-        The crop window is guaranteed to overlap with the bounding box of
-        `total_label`.  The reference slice is cropped at the same position.
-
-        Optional: if `x_u_2d` / `x_u_2d_r` (UniverSeg-normalised slices) are
-        provided, the SAME random crop is applied to them and they are returned
-        as two additional (128, 128, 1) float32 arrays.
-
-        Returns
-        -------
-        Without x_u:  (x_2d, total_label, x_2d_r, total_label_r)
-        With    x_u:  above + (x_u_2d_cropped, x_u_2d_r_cropped)
-        All outputs have shape (128, 128, 1) float32.
+        Label-guided crop of a 2-D slice pair with random Scale Augmentation.
+        
+        50% chance to extract exactly 128x128 crop.
+        50% chance to extract a random quadratic crop (e.g. 150x150 up to 256x256) 
+        and mathematically resize it down to 128x128 for scale invariance.
+        
+        The crop window is strictly guaranteed to overlap with the bounding box of
+        `total_label_r` (the Support/Prompt mask)
         """
-        ps = self.height  # patch size (128)
+        import PIL.Image as Image
+        
+        orig_h, orig_w = x_2d.shape
+        max_bound = min(orig_h, orig_w)
+        
+        # 50% chance for random quadratic resolution (scale jitter)
+        if random.random() < 0.5 and max_bound > self.height:
+            upper_bound = min(256, max_bound)
+            if upper_bound > self.height:
+                ps = random.randint(self.height, upper_bound)
+            else:
+                ps = self.height
+        else:
+            ps = self.height
 
-        x_2d        = self._pad_if_needed(x_2d,        ps, pad_val=-5.0)
-        x_2d_r      = self._pad_if_needed(x_2d_r,      ps, pad_val=-5.0)
-        total_label = self._pad_if_needed(total_label,  ps, pad_val=0.0)
+        x_2d          = self._pad_if_needed(x_2d,          ps, pad_val=-5.0)
+        x_2d_r        = self._pad_if_needed(x_2d_r,        ps, pad_val=-5.0)
+        total_label   = self._pad_if_needed(total_label,   ps, pad_val=0.0)
         total_label_r = self._pad_if_needed(total_label_r, ps, pad_val=0.0)
 
         # pad_val=0.0: background is 0 in UniverSeg's [0, 1] space
@@ -136,8 +143,8 @@ class DataGenerator:
 
         h, w = x_2d.shape
 
-        # --- Label-guided crop origin ---
-        nonzero = np.argwhere(total_label > 0)
+        # --- Label-guided crop origin (Origin must only be calculated from the Support Prompt (total_label_r)) ---
+        nonzero = np.argwhere(total_label_r > 0)
         if len(nonzero) > 0:
             min_h_l, min_w_l = nonzero.min(axis=0)
             max_h_l, max_w_l = nonzero.max(axis=0)
@@ -156,26 +163,36 @@ class DataGenerator:
             sh = random.randint(0, max(0, h - ps))
             sw = random.randint(0, max(0, w - ps))
 
-        def crop(a):
-            return a[sh:sh + ps, sw:sw + ps]
+        def crop_and_resize(a, is_mask=False):
+            patch = a[sh:sh + ps, sw:sw + ps]
+            if ps == self.height:  # No resizing needed
+                return patch
+            resample_mode = Image.NEAREST if is_mask else Image.BILINEAR
+            patch_img = Image.fromarray(patch)
+            
+            # Note: PIL resize takes (width, height)
+            resized_img = patch_img.resize((self.width, self.height), resample=resample_mode)
+            return np.array(resized_img, dtype=a.dtype)
 
-        x_2d        = crop(x_2d)
-        x_2d_r      = crop(x_2d_r)
-        total_label = crop(total_label)
-        total_label_r = crop(total_label_r)
+        x_2d_res        = crop_and_resize(x_2d,        is_mask=False)
+        x_2d_r_res      = crop_and_resize(x_2d_r,      is_mask=False)
+        total_label_res = crop_and_resize(total_label, is_mask=True)
+        total_label_r_res = crop_and_resize(total_label_r, is_mask=True)
 
         # Add channel dim → (128, 128, 1)
         result = (
-            x_2d[..., np.newaxis].astype(np.float32),
-            total_label[..., np.newaxis].astype(np.float32),
-            x_2d_r[..., np.newaxis].astype(np.float32),
-            total_label_r[..., np.newaxis].astype(np.float32),
+            x_2d_res[..., np.newaxis].astype(np.float32),
+            total_label_res[..., np.newaxis].astype(np.float32),
+            x_2d_r_res[..., np.newaxis].astype(np.float32),
+            total_label_r_res[..., np.newaxis].astype(np.float32),
         )
 
         if x_u_2d is not None:
+            x_u_2d_res   = crop_and_resize(x_u_2d,   is_mask=False)
+            x_u_2d_r_res = crop_and_resize(x_u_2d_r, is_mask=False)
             return result + (
-                crop(x_u_2d)[..., np.newaxis].astype(np.float32),
-                crop(x_u_2d_r)[..., np.newaxis].astype(np.float32),
+                x_u_2d_res[..., np.newaxis].astype(np.float32),
+                x_u_2d_r_res[..., np.newaxis].astype(np.float32),
             )
         return result
 
