@@ -18,6 +18,7 @@ if _project_root not in sys.path:
 from data.test_data.ds_handler import save_dataset as _save_dataset_npz
 from utils.resampling import resample_isotropic
 from utils.cropping import crop_to_anatomy, ct_signal_threshold
+from utils.itk_utils import load_medical_image, get_voxel_sizes
 import numpy as np
 import SimpleITK as sitk
 
@@ -48,11 +49,9 @@ def process_flare_dataset(data_dir: str, output_path: str, crop: bool = True, ma
             continue
             
         # 1. Load image and mask
-        img_sitk = sitk.ReadImage(img_path)
-        img_array = sitk.GetArrayFromImage(img_sitk).astype(np.float32)
+        img_sitk, img_array = load_medical_image(img_path)
         
-        mask_sitk = sitk.ReadImage(mask_path)
-        mask_array = sitk.GetArrayFromImage(mask_sitk)
+        mask_sitk, mask_array = load_medical_image(mask_path)
         
         # Verify shape
         if img_array.shape != mask_array.shape:
@@ -67,7 +66,7 @@ def process_flare_dataset(data_dir: str, output_path: str, crop: bool = True, ma
             )
 
         # 3. Resample to isotropic
-        voxel_sizes = img_sitk.GetSpacing()[::-1]
+        voxel_sizes = get_voxel_sizes(img_sitk)
         print(f"  Resampling from spacing {tuple(f'{v:.2f}' for v in voxel_sizes)} mm → 1.0 mm isotropic ...")
         
         img_resampled = resample_isotropic(img_array, voxel_sizes, is_mask=False, is_ct=True)

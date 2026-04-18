@@ -21,6 +21,7 @@ if _project_root not in sys.path:
 from data.test_data.ds_handler import save_dataset as _save_dataset_npz
 from utils.resampling import resample_isotropic
 from utils.cropping import crop_to_anatomy, ct_signal_threshold, mri_signal_threshold
+from utils.itk_utils import load_medical_image, get_voxel_sizes
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
@@ -178,9 +179,7 @@ class BaseProcessor:
                 .replace(".seg.nrrd", "")
             )
 
-            seg_img = sitk.ReadImage(seg_file)
-
-            seg_array = sitk.GetArrayFromImage(seg_img)
+            seg_img, seg_array = load_medical_image(seg_file)
 
             # Shape safety
             if seg_array.shape != ref_shape:
@@ -306,7 +305,7 @@ class BaseProcessor:
 
             # 5 – Isotropic resampling to 1 mm³ (preserves spatial scale for
             #     patch-based training without resizing distortion)
-            voxel_sizes = reference_sitk.GetSpacing()[::-1]  # SimpleITK gives (x,y,z); flip to (z,y,x)
+            voxel_sizes = get_voxel_sizes(reference_sitk)
             print(f"  Resampling from spacing {tuple(f'{v:.2f}' for v in voxel_sizes)} mm → 1.0 mm isotropic ...")
             image_array   = resample_isotropic(image_array,   voxel_sizes, is_mask=False, is_ct=is_ct)
             combined_mask = resample_isotropic(combined_mask, voxel_sizes, is_mask=True,  is_ct=False)
@@ -347,8 +346,7 @@ class CTProcessor(BaseProcessor):
             print(f"  CT not found for {patient_idx}, skipping.")
             return None
 
-        ct_sitk  = sitk.ReadImage(ct_paths[0])
-        ct_array = sitk.GetArrayFromImage(ct_sitk).astype(np.float32)
+        ct_sitk, ct_array = load_medical_image(ct_paths[0])
 
         return ct_sitk, ct_array
 
@@ -447,8 +445,8 @@ class MRIProcessor(BaseProcessor):
             print(f"  MRI not found for {patient_idx}, skipping.")
             return None
 
-        ct_sitk = sitk.ReadImage(ct_paths[0])
-        mri_sitk = sitk.ReadImage(mr_paths[0])
+        ct_sitk, _ = load_medical_image(ct_paths[0])
+        mri_sitk, _ = load_medical_image(mr_paths[0])
 
         # Register MRI → CT space
         mri_resampled = self.register_and_resample(ct_sitk, mri_sitk)
