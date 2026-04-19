@@ -2,6 +2,29 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies. 
 
+## [v313] - Float32 + SE Attention
+*Implementation: `prompt_unet_313.py`, `p_unet_313.ipynb`*
+
+**Architecture**
+- **SE Attention enabled:** Squeeze-and-Excitation channel gates on all prompt skip connections — identical to v311.
+- **Float32 training:** Pure `float32` throughout, plain `Adam` (no `LossScaleOptimizer`) — identical to v312.
+- **Pure Conv2D everywhere:** Maintained from v310 onward.
+
+This completes the 2×2 ablation matrix over the v310 generation:
+
+| | No SE | SE |
+|---|---|---|
+| **float16** | v310 | v311 |
+| **float32** | v312 | **v313** |
+
+- v312 vs v313 isolates: **does SE attention help under float32 training?**
+- v311 vs v313 isolates: **does float32 vs float16 matter when SE is present?**
+
+Filter schedule, scale augmentation, and leakage fix are identical to v310–312:
+`[48, 96, 192, 256, 384]` (~15 M trainable params).
+
+---
+
 ## [v312] - Float32 Ablation Variant
 *Implementation: `prompt_unet_312.py`, `p_unet_312.ipynb`*
 
