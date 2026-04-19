@@ -15,7 +15,6 @@ import random
 import time
 
 import numpy as np
-from scipy.ndimage import label as scipy_label
 
 from utils.preprocessing import universal_normalization, universeg_normalization
 
@@ -44,6 +43,9 @@ class DataGenerator:
         self._norm_cache: dict = {}
         # Per-call UniverSeg normalization cache: pid → x_u_np
         self._universeg_cache: dict = {}
+        # Per-call valid-slice index: (pid, dim_idx) → {task_id: np.ndarray of valid slice indices}
+        # Avoids O(y_shape) scans for sparse structures (e.g. small body organs).
+        self._slice_index_cache: dict = {}
 
     # ------------------------------------------------------------------ #
     #  Internal helpers                                                    #
@@ -93,6 +95,56 @@ class DataGenerator:
         if pid is not None:
             self._universeg_cache[pid] = x_u
         return x_u
+
+    def _build_valid_slice_index(self, y, dim_idx):
+        """
+        Pre-compute which slices along `dim_idx` contain at least
+        self.minimum_pixel foreground pixels for each task.
+
+        Parameters
+        ----------
+        y       : list of 3-D arrays (multi-channel) or single 3-D int array
+        dim_idx : 0='x', 1='y', 2='z'
+
+        Returns
+        -------
+        dict : task_id (int, 1-based for multi-channel; label value for int volume)
+               → np.ndarray of valid slice indices along dim_idx
+        """
+        valid    = {}
+        in_plane = tuple(ax for ax in range(3) if ax != dim_idx)
+
+        if isinstance(y, list):
+            for ch_idx, seg in enumerate(y):
+                arr    = np.asarray(seg, dtype=np.float32)
+                counts = arr.sum(axis=in_plane)           # shape: (num_slices,)
+                idx    = np.where(counts >= self.minimum_pixel)[0]
+                if idx.size > 0:
+                    valid[ch_idx + 1] = idx               # 1-based task id
+        else:
+            y_arr = np.asarray(y)
+            for lv in np.unique(y_arr):
+                lv = int(lv)
+                if lv == 0:
+                    continue
+                counts = (y_arr == lv).sum(axis=in_plane)
+                idx    = np.where(counts >= self.minimum_pixel)[0]
+                if idx.size > 0:
+                    valid[lv] = idx
+
+        return valid
+
+    def _get_slice_index(self, y, pid, dim_idx):
+        """
+        Return (and lazily build + cache) the valid-slice index for (pid, dim_idx).
+        When pid is None the index is built on the fly without caching.
+        """
+        if pid is None:
+            return self._build_valid_slice_index(y, dim_idx)
+        key = (pid, dim_idx)
+        if key not in self._slice_index_cache:
+            self._slice_index_cache[key] = self._build_valid_slice_index(y, dim_idx)
+        return self._slice_index_cache[key]
 
     def _pad_if_needed(self, arr, target, pad_val=0.0):
         """Zero-pad a 2-D array symmetrically so both dims >= target."""
@@ -197,12 +249,17 @@ class DataGenerator:
         return result
 
     def _sample_offset(self, i, offset, length):
-        """Return a random signed offset ±[1..offset] that stays in-bounds."""
-        possible = list(range(-offset, 0)) + list(range(1, offset + 1))
-        r = random.choice(possible)
-        if (i + r < 0) or (i + r >= length):
+        """Return a random signed offset ±[1..offset] that stays in-bounds.
+
+        Filters to only valid offsets before sampling, so this never returns
+        None when valid offsets exist (e.g. for boundary slices where negative
+        offsets would be out-of-bounds, only positive ones are considered).
+        """
+        possible = [r for r in list(range(-offset, 0)) + list(range(1, offset + 1))
+                    if 0 <= i + r < length]
+        if not possible:
             return None
-        return r
+        return random.choice(possible)
 
     def _select_valid_labels(self, y_2d, y_2d_r, max_number_labels, primary_task):
         """
@@ -357,43 +414,64 @@ class DataGenerator:
 
     def _process_dimension(self, x, y, d, offset, max_number_labels,
                            x_new, y_new, prompt, offset_list, m_new,
-                           modality_flag, slices_added, max_data_points):
+                           modality_flag, slices_added, max_data_points, pid=None):
         """
         Attempt to harvest data points along axis `d` for one patient volume.
         Returns updated `slices_added` count.
+
+        Uses a pre-computed valid-slice index (cached per pid) so that each
+        outer-loop iteration is O(1) — sampling directly from slices that are
+        known to contain foreground — instead of O(y_shape) blind shuffling.
+        This eliminates 30-second stalls for sparse body structures.
         """
         # Skip dimension if any in-plane extent is smaller than the patch size.
         dim_idx    = 'xyz'.index(d)
-        slice_dims = [s for i, s in enumerate(x.shape) if i != dim_idx]
+        slice_dims = [s for ax, s in enumerate(x.shape) if ax != dim_idx]
         if min(slice_dims) < max(self.height, self.width):
             return slices_added
 
         if isinstance(y, list):
-            y_shape    = np.asarray(y[0]).shape[dim_idx]
-            valid_tasks = list(range(1, len(y) + 1))
+            y_shape = np.asarray(y[0]).shape[dim_idx]
         else:
             y_shape = y.shape[dim_idx]
-            flat    = y.reshape(-1)
-            valid_tasks = [int(v) for v in np.unique(flat) if v != 0]
+
+        # Build (or fetch cached) valid-slice index for this (pid, dim_idx).
+        # valid_index: task_id → np.ndarray of slice indices with ≥ minimum_pixel foreground.
+        valid_index = self._get_slice_index(y, pid, dim_idx)
+        valid_tasks = list(valid_index.keys())
 
         if not valid_tasks:
             return slices_added
 
         slices_added_per_pid = 0
         failed_searches      = 0
+        _MAX_TRIES           = 5   # random valid-slice candidates per outer iteration
 
         while (slices_added_per_pid < 150
                and slices_added      < max_data_points
                and failed_searches   < 100):
 
             primary_task  = random.choice(valid_tasks)
-            slice_indices = list(range(y_shape))
-            random.shuffle(slice_indices)
+            candidates    = valid_index[primary_task]
+
+            # Build a frozenset for O(1) reference-frame lookup (built once per
+            # outer-loop iteration, not per candidate try).
+            ref_valid_set = frozenset(candidates.tolist())
+
+            # Sample up to _MAX_TRIES slices that are already known to have foreground.
+            n_tries = min(len(candidates), _MAX_TRIES)
+            chosen  = np.random.choice(candidates, size=n_tries, replace=False)
 
             found = False
-            for i in slice_indices:
+            for i in chosen.tolist():
                 r = self._sample_offset(i, offset, y_shape)
                 if r is None:
+                    continue
+
+                # Pre-check: reference frame (i+r) must also be a valid slice for
+                # this task.  Avoids the expensive _create_single_datapoint call
+                # when the reference mask would be empty.
+                if (i + r) not in ref_valid_set:
                     continue
 
                 result = self._create_single_datapoint(
@@ -410,7 +488,7 @@ class DataGenerator:
                     slices_added_per_pid += 1
                     failed_searches       = 0
                     found = True
-                    break  # pick a new task on the next iteration
+                    break
 
             if not found:
                 failed_searches += 1
@@ -440,6 +518,8 @@ class DataGenerator:
         print("Creating new Data Points ...")
 
         self._norm_cache.clear()
+        self._universeg_cache.clear()
+        self._slice_index_cache.clear()
 
         x_new, y_new, prompt, offset_list, m_new = [], [], [], [], []
         slices_added = 0
@@ -468,7 +548,7 @@ class DataGenerator:
                     slices_added = self._process_dimension(
                         x, y, d, offset, max_number_labels,
                         x_new, y_new, prompt, offset_list, m_new,
-                        is_mri, slices_added, max_data_points
+                        is_mri, slices_added, max_data_points, pid=pid
                     )
 
                 if slices_added >= max_data_points:
@@ -590,6 +670,7 @@ class DataGenerator:
         self.dataloader.current_ids = self.dataloader.train_ids
         self._norm_cache.clear()
         self._universeg_cache.clear()
+        self._slice_index_cache.clear()
 
         start = time.time()
         print("Creating new Data Points ...")
@@ -650,24 +731,23 @@ class DataGenerator:
                 if min(slice_dims) < max(self.height, self.width):
                     continue
 
-                # Check whether this patient actually contains the task
-                if isinstance(y, list):
-                    if task > len(y):
-                        continue
-                    task_vol = np.asarray(y[task - 1])
-                    if task_vol.sum() == 0:
-                        continue
-                    y_shape = task_vol.shape[dim_idx]
-                else:
-                    y_arr = np.asarray(y)
-                    if task not in np.unique(y_arr):
-                        continue
-                    y_shape = y_arr.shape[dim_idx]
+                # Use pre-computed valid-slice index to skip patients / slices
+                # that don't contain the task — avoids np.unique + full-slice scan.
+                valid_index   = self._get_slice_index(y, pid, dim_idx)
+                candidate_arr = valid_index.get(task, np.array([], dtype=np.int64))
+                if candidate_arr.size == 0:
+                    continue  # patient has no valid slices for this task in this dimension
 
-                slice_indices = list(range(y_shape))
-                random.shuffle(slice_indices)
+                if isinstance(y, list):
+                    y_shape = np.asarray(y[0]).shape[dim_idx]
+                else:
+                    y_shape = np.asarray(y).shape[dim_idx]
+
+                slice_indices = candidate_arr.copy()
+                np.random.shuffle(slice_indices)
 
                 for i in slice_indices:
+                    i = int(i)
                     if slices_added >= max_data_points:
                         break
                     step_counter += 1
