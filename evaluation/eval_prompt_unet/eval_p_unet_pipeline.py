@@ -132,12 +132,10 @@ class PromptUNetTester:
 
         # On CPU, float16 has NO hardware acceleration (no Tensor Cores).
         # Mixed-precision models like v292 run slower in float16 on CPU than float32,
-        # because TF must upcast float16 ops internally. Force float32 globally so
-        # all models — regardless of their saved compute dtype — run at native speed.
+        # because TF must upcast float16 ops internally.
         on_cpu = len(tf.config.list_physical_devices('GPU')) == 0
         if on_cpu:
-            tf.keras.mixed_precision.set_global_policy('float32')
-            print("[INFO] CPU detected — forcing float32 compute policy for all models.")
+            print("[INFO] CPU detected — will force float32 compute policy per model.")
 
         # Initialize DataLoader_npz and DataGenerator
         dataloader = DataLoader_npz(self.dataset_path, val_size=0.0)
@@ -167,8 +165,31 @@ class PromptUNetTester:
             print(f"--- [SECTION 1: METRICS] ---")
             for model_name in models:
                 try:
+                    # Re-enforce float32 policy here (after clear_session() which
+                    # may reset it in some TF versions) so newly-built layers get
+                    # float32 compute dtype.
+                    if on_cpu:
+                        tf.keras.mixed_precision.set_global_policy('float32')
+
                     model_path = os.path.join(self.models_dir, model_name)
                     loaded_model = tf.keras.models.load_model(model_path, compile=False)
+
+                    # load_model() restores the dtype policy that was saved WITH
+                    # the model (e.g. float16 for v310 mixed-precision models),
+                    # ignoring the global policy set above.  On CPU this causes
+                    # float16 intermediate activations to overflow when running
+                    # large batches (batch_size=64), producing sigmoid ≈ 0
+                    # everywhere → Dice = 0.  Fix: override each layer's dtype
+                    # policy to float32 using the public Keras Policy API.
+                    if on_cpu:
+                        fp32_policy = tf.keras.mixed_precision.Policy('float32')
+                        for layer in loaded_model.layers:
+                            try:
+                                if (hasattr(layer, 'dtype_policy')
+                                        and layer.dtype_policy.compute_dtype != 'float32'):
+                                    layer.dtype_policy = fp32_policy
+                            except Exception:
+                                pass  # some layer types are read-only; safe to skip
 
                     avg_dice = self.test_routine(
                         model_name=model_name,
@@ -210,8 +231,21 @@ class PromptUNetTester:
                 print(f"\n--- [SECTION 2: VISUALIZATIONS] ---")
                 for model_name in models:
                     try:
+                        if on_cpu:
+                            tf.keras.mixed_precision.set_global_policy('float32')
+
                         model_path = os.path.join(self.models_dir, model_name)
                         loaded_model = tf.keras.models.load_model(model_path, compile=False)
+
+                        if on_cpu:
+                            fp32_policy = tf.keras.mixed_precision.Policy('float32')
+                            for layer in loaded_model.layers:
+                                try:
+                                    if (hasattr(layer, 'dtype_policy')
+                                            and layer.dtype_policy.compute_dtype != 'float32'):
+                                        layer.dtype_policy = fp32_policy
+                                except Exception:
+                                    pass  # some layer types are read-only; safe to skip
 
                         print(f"\n>> Visualizing predictions for: {model_name} (Threshold: {threshold})")
                         visualize_a_few_results(
