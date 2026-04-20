@@ -291,33 +291,52 @@ class PromptUNet:
         return tf.keras.Model(inputs=inputs, outputs=output)
 
     # ------------------------------------------------------------------
-    def v21_augmentation(self, x, y, p):
+    def v21_augmentation_tf(self, x, y, p, m):
         """
-        v21 augmentation (10 % per stage).
+        v21 augmentation — **pure TF ops only** (safe to call directly in
+        a `.map()` step without wrapping in `tf.py_function`).
 
-        Photometric  → x only
-        Geometric    → x, y, p consistently
-        Prompt morph → p (segm channel) only
+        Stages
+        ------
+        Photometric  → x only   (10 % probability)
+        Geometric    → x, y, p consistently (10 % probability)
+
+        The prompt-morphological step is kept separate in
+        `v21_augmentation_morph()` because it requires scipy (numpy) ops.
         """
         # --- photometric (x only) ---
-        if random.random() < 0.1:
-            x = self._photo_aug(x)
-            if len(x.shape) > len(y.shape):
-                x = x[..., 0]
-            # min-max normalise back to [0, 1] range
-            x_min = tf.reduce_min(x)
-            x_max = tf.reduce_max(x)
-            x = (x - x_min) / (x_max - x_min + 1e-8)
+        do_photo = tf.random.uniform([]) < 0.1
+        if do_photo:
+            x_aug = self._photo_aug(tf.expand_dims(x, 0))   # needs batch dim
+            x_aug = tf.squeeze(x_aug, 0)
+            x_min = tf.reduce_min(x_aug)
+            x_max = tf.reduce_max(x_aug)
+            x = (x_aug - x_min) / (x_max - x_min + 1e-8)
 
         # --- geometric (x, y, p together) ---
-        if random.random() < 0.1:
-            concatenated = tf.concat([x, y, p], axis=-1)          # (H,W,4)
-            concatenated = tf.expand_dims(concatenated, 0)        # (1,H,W,4)
-            concatenated = self._geo_aug(concatenated)
-            concatenated = concatenated[0, ...]
+        # NOTE: _geo_aug must be called HERE (graph mode), NOT inside
+        # tf.py_function, because RandomRotation/RandomZoom have a TF bug
+        # with 4-channel tensors when executed inside EagerPyFunc.
+        do_geo = tf.random.uniform([]) < 0.1
+        if do_geo:
+            concatenated = tf.concat([x, y, p], axis=-1)      # (H,W,4)
+            concatenated = tf.expand_dims(concatenated, 0)    # (1,H,W,4)
+            concatenated = self._geo_aug(concatenated, training=True)
+            concatenated = concatenated[0, ...]                # (H,W,4)
             x, y, p = tf.split(concatenated,
                                 num_or_size_splits=[1, 1, 2], axis=-1)
 
+        return x, y, p, m
+
+    def v21_augmentation_morph(self, x, y, p):
+        """
+        v21 prompt-morphological augmentation — scipy/numpy ops.
+        Called via `tf.py_function` so it runs eagerly.
+
+        Stage
+        -----
+        Prompt morph → p (segm channel only, 10 % probability)
+        """
         # --- prompt morphological (p segm channel only) ---
         if random.random() < 0.1:
             p_segm = p[..., 1:2]
@@ -333,6 +352,19 @@ class PromptUNet:
             p = tf.concat([p[..., 0:1], p_segm], axis=-1)
 
         return x, y, p   # no batch dim; .batch() adds it later
+
+    def v21_augmentation(self, x, y, p):
+        """
+        Legacy single-call wrapper kept for compatibility.
+        Prefer calling v21_augmentation_tf + v21_augmentation_morph
+        in separate .map() steps (see notebook pipeline).
+
+        WARNING: calling this inside tf.py_function will crash because
+        _geo_aug(RandomRotation) cannot handle 4-ch tensors in EagerPyFunc.
+        """
+        x, y, p, _ = self.v21_augmentation_tf(x, y, p, None)
+        x, y, p    = self.v21_augmentation_morph(x, y, p)
+        return x, y, p
 
     # ------------------------------------------------------------------
     @tf.function
