@@ -238,7 +238,7 @@ def visualize_bundle(path_to_npz):
     plt.tight_layout()
     plt.show()
 
-def visualize_img_with_mask(img, mask, alpha=0.5):
+def visualize_img_with_mask(img, mask, alpha=0.5, vmin=None, vmax=None):
     """
     Interactive volume visualizer using ipywidgets.
     Allows sliding through Z-slices of a 3D volume with an overlaid mask.
@@ -266,8 +266,11 @@ def visualize_img_with_mask(img, mask, alpha=0.5):
 
     def show_slice(idx):
         plt.figure(figsize=(6,6))
-        plt.imshow(img[idx], cmap='gray')
-        plt.imshow(mask[idx], cmap='jet', alpha=alpha)
+        plt.imshow(img[idx], cmap='gray', vmin=vmin, vmax=vmax)
+        
+        m = np.ma.masked_where(mask[idx] == 0, mask[idx])
+        plt.imshow(m, cmap='jet', alpha=alpha, vmin=1, vmax=np.max(mask))
+        
         plt.title(f"Slice {idx}")
         plt.axis('off')
         plt.show()
@@ -282,24 +285,25 @@ def visualize_img_with_mask(img, mask, alpha=0.5):
 
     widgets.interact(show_slice, idx=slider)
 
-def plot_vol_slices(img, mask, num_slices=5, alpha=0.5, figsize=(15, 5)):
+def plot_vol_slices(img, mask, num_slices=5, alpha=0.5, figsize=(15, 12), vmin=None, vmax=None):
     """
-    Static volume visualizer showing a horizontal grid of evenly spaced slices.
+    Static volume visualizer showing a 3xN grid of slices (Axial, Coronal, Sagittal).
     
     Unlike visualize_img_with_mask, the output of this function IS persisted 
     in the notebook file, making it ideal for documenting results.
     
     Args:
-        img (np.ndarray): 3D image volume (Z, H, W).
-        mask (np.ndarray): 3D segmentation mask (Z, H, W).
-        num_slices (int, optional): Number of slices to display. Defaults to 5.
+        img (np.ndarray): 3D image volume (D, H, W).
+        mask (np.ndarray): 3D segmentation mask (D, H, W).
+        num_slices (int, optional): Number of slices per axis. Defaults to 5.
         alpha (float, optional): Transparency of the mask overlay. Defaults to 0.5.
-        figsize (tuple, optional): Size of the resulting figure. Defaults to (15, 5).
+        figsize (tuple, optional): Size of the resulting figure. Defaults to (15, 12).
+        vmin, vmax (float, optional): Colormap limits for the image.
         
     Returns:
         matplotlib.figure.Figure: The generated figure object.
     """
-    # Ensure correct shape (Z, H, W)
+    # Ensure correct shape (D, H, W)
     if len(img.shape) == 4 and img.shape[-1] == 1:
         img = np.squeeze(img, axis=-1)
     if len(mask.shape) == 4 and mask.shape[-1] == 1:
@@ -307,17 +311,42 @@ def plot_vol_slices(img, mask, num_slices=5, alpha=0.5, figsize=(15, 5)):
         
     assert img.shape == mask.shape, f"Shape mismatch: {img.shape} vs {mask.shape}"
     
-    depth = img.shape[0]
-    indices = np.linspace(0, depth - 1, num_slices, dtype=int)
+    dims = img.shape
+    fig, axes = plt.subplots(3, num_slices, figsize=figsize, squeeze=False)
     
-    fig, axes = plt.subplots(1, num_slices, figsize=figsize, squeeze=False)
-        
-    for i, idx in enumerate(indices):
-        ax = axes[0, i]
-        ax.imshow(img[idx], cmap='gray')
-        ax.imshow(mask[idx], cmap='jet', alpha=alpha)
-        ax.set_title(f"Slice {idx}")
-        ax.axis('off')
+    axis_names = ['Axial', 'Coronal', 'Sagittal']
+    mask_max = np.max(mask)
+    if mask_max < 1: mask_max = 1
+    
+    for row in range(3):
+        indices = np.linspace(0, dims[row] - 1, num_slices, dtype=int)
+        for col, idx in enumerate(indices):
+            ax = axes[row, col]
+            
+            # Extract slice based on axis
+            if row == 0: # Axial (D, H, W) -> [idx, :, :]
+                slc = img[idx, :, :]
+                msk = mask[idx, :, :]
+            elif row == 1: # Coronal (D, H, W) -> [:, idx, :]
+                slc = img[:, idx, :]
+                msk = mask[:, idx, :]
+            else: # Sagittal (D, H, W) -> [:, :, idx]
+                slc = img[:, :, idx]
+                msk = mask[:, :, idx]
+            
+            ax.imshow(slc, cmap='gray', vmin=vmin, vmax=vmax)
+            
+            if np.any(msk > 0):
+                m = np.ma.masked_where(msk == 0, msk)
+                ax.imshow(m, cmap='jet', alpha=alpha, vmin=1, vmax=mask_max)
+            
+            # Title only for first slice of row or always
+            title = f"Slice {idx}"
+            if col == 0:
+                title = f"{axis_names[row]} - {title}"
+            
+            ax.set_title(title, fontsize=10)
+            ax.axis('off')
         
     plt.tight_layout()
     plt.close(fig)
