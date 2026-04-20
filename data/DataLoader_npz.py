@@ -10,6 +10,17 @@ class DataLoader_npz(DataLoader):
     val_size: Percentage of Patients to be used for validation. Use 0.0 when no validation run for training is made.
     mode: No effect
     max_img: No effect
+
+    RAM Management Note:
+    Currently, DataLoader_npz fully loads the .npz file datasets directly into RAM using numpy.load() 
+    without memory mapping. This means every single patient volume and mask is loaded into RAM at the 
+    exact same time during startup.
+    If your dataset is larger than your available RAM, this will cause Out of Memory (OOM) errors. 
+    To avoid this, you would need to implement lazy-loading in ds_handler.py (e.g., by using mmap_mode='r' 
+    in np.load) and adjust the generator to load array chunks on demand. 
+    CONSEQUENCE: If you choose to enable memory-mapping to save RAM, SSD Read speeds become the primary 
+    bottleneck. Because the dataloader randomly shuffles across patients, doing random disk reads during 
+    generation will drastically throttle training speeds compared to executing entirely from RAM!
     """
 
     def __init__(self, npz_paths, val_size, mode="", max_img=10000):

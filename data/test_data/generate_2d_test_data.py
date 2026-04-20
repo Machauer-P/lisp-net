@@ -74,6 +74,7 @@ def gen_save_ds(dg, path, ds_name, offset_val,
             max_data_points=max_data_points + len_p_set,
             offset=offset_val,
             dimensions=dimensions,
+            extraction_mode='fullslice'
         )
 
         total       = len(x_np)

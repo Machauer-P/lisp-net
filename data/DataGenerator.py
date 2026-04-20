@@ -23,6 +23,17 @@ class DataGenerator:
     """
     Generates (image, label, prompt, modality) tuples from a DataLoader.
 
+    RAM Management Note:
+    The DataGenerator evaluates CPU-intensive float32 scaling operations (Z-score, UniverSeg) 
+    per patient and permanently caches the results in `_norm_cache` and `_universeg_cache`. 
+    These caches persist indefinitely across your entire program execution to preserve sampling speed 
+    across multiple generator loops. 
+    CONSEQUENCE: If you run through a massive dataset, these duplicate `float32` arrays will stack 
+    in RAM alongside your existing DataLoader raw arrays! If your memory is maxing out, you can 
+    manually call `gen._norm_cache.clear()` and `gen._universeg_cache.clear()` sequentially in 
+    your pipeline to release memory. Note that doing so forces any future samples from those patients 
+    to be re-scaled and re-evaluated, which will slow training down.
+
     Parameters
     ----------
     dataloader    : DataLoader object whose .dataset[id] returns a dict with
@@ -248,6 +259,57 @@ class DataGenerator:
             )
         return result
 
+    def _extract_fullslice_2d(self, x_2d, total_label, x_2d_r, total_label_r,
+                               x_u_2d=None, x_u_2d_r=None):
+        """
+        Extract the maximum centered square from each 2D slice and resize it
+        to (self.height × self.width).  Unlike _extract_patch_2d, no
+        label-guided crop offset is applied — the full anatomical context of
+        the cross-section is always preserved.
+
+        Example: a 278×290 axial slice → center-crop to 278×278 → resize to
+        128×128.  Works for any in-plane size, including slices smaller than
+        self.height (they are upscaled), so no in-plane size guard is needed.
+        """
+        import PIL.Image as Image
+
+        h, w = x_2d.shape
+        sq   = min(h, w)   # largest square that fits in this cross-section
+
+        top  = (h - sq) // 2
+        left = (w - sq) // 2
+
+        def crop_and_resize(a, is_mask=False):
+            patch = a[top:top + sq, left:left + sq]
+            if sq == self.height and self.height == self.width:
+                return patch   # already the right size, skip PIL round-trip
+            resample = Image.NEAREST if is_mask else Image.BILINEAR
+            return np.array(
+                Image.fromarray(patch).resize((self.width, self.height), resample=resample),
+                dtype=a.dtype,
+            )
+
+        x_r    = crop_and_resize(x_2d,         is_mask=False)
+        xref_r = crop_and_resize(x_2d_r,       is_mask=False)
+        y_r    = crop_and_resize(total_label,   is_mask=True)
+        yref_r = crop_and_resize(total_label_r, is_mask=True)
+
+        result = (
+            x_r[..., np.newaxis].astype(np.float32),
+            y_r[..., np.newaxis].astype(np.float32),
+            xref_r[..., np.newaxis].astype(np.float32),
+            yref_r[..., np.newaxis].astype(np.float32),
+        )
+
+        if x_u_2d is not None:
+            xu_r   = crop_and_resize(x_u_2d,   is_mask=False)
+            xu_ref = crop_and_resize(x_u_2d_r, is_mask=False)
+            return result + (
+                xu_r[..., np.newaxis].astype(np.float32),
+                xu_ref[..., np.newaxis].astype(np.float32),
+            )
+        return result
+
     def _sample_offset(self, i, offset, length):
         """Return a random signed offset ±[1..offset] that stays in-bounds.
 
@@ -358,16 +420,24 @@ class DataGenerator:
         return result
 
     def _create_single_datapoint(self, x, y, i, r, d, max_number_labels, primary_task,
-                                  x_u=None):
+                                  x_u=None, extraction_mode='crop'):
         """
         Attempt to build one (x_2d, y_2d, prompt[, x_u_2d]) tuple.
 
         Returns None if the candidate slice pair doesn't pass quality checks.
         All arrays are float32 numpy, shapes (128,128,1) / (128,128,2).
 
-        If `x_u` (UniverSeg-normalised volume) is provided, the same crop is
-        applied to extract `x_u_2d` (128,128,1) in [0, 1] and it is appended
-        to the return tuple:  (x_2d, y_2d, prompt, x_u_2d).
+        If `x_u` (UniverSeg-normalised volume) is provided, the same spatial
+        transform is applied to extract `x_u_2d` (128,128,1) in [0, 1] and it
+        is appended to the return tuple:  (x_2d, y_2d, prompt, x_u_2d).
+
+        Parameters
+        ----------
+        extraction_mode : 'crop' (default) or 'fullslice'
+            'crop'      → label-guided patch crop with optional scale jitter
+                          (_extract_patch_2d). Requires in-plane dims >= 128.
+            'fullslice' → maximum centered square resized to target resolution
+                          (_extract_fullslice_2d). Works for any in-plane size.
         """
         if isinstance(y, list):
             y_2d   = [self._get_2d_slice(np.asarray(seg), i,   d) for seg in y]
@@ -390,10 +460,16 @@ class DataGenerator:
         x_u_2d   = self._get_2d_slice(x_u, i,   d) if x_u is not None else None
         x_u_2d_r = self._get_2d_slice(x_u, i+r, d) if x_u is not None else None
 
-        patch = self._extract_patch_2d(
-            x_2d, total_label, x_2d_r, total_label_r,
-            x_u_2d, x_u_2d_r,
-        )
+        if extraction_mode == 'fullslice':
+            patch = self._extract_fullslice_2d(
+                x_2d, total_label, x_2d_r, total_label_r,
+                x_u_2d, x_u_2d_r,
+            )
+        else:
+            patch = self._extract_patch_2d(
+                x_2d, total_label, x_2d_r, total_label_r,
+                x_u_2d, x_u_2d_r,
+            )
 
         if x_u is not None:
             x_2d, total_label, x_2d_r, total_label_r, x_u_2d, x_u_2d_r = patch
@@ -639,7 +715,8 @@ class DataGenerator:
     # ---- Single-task generation (for UniverSeg-style eval data) --------- #
 
     def get_data_points_from_one_task_numpy(self, max_data_points=116, offset=5,
-                                            dimensions=None):
+                                            dimensions=None,
+                                            extraction_mode='crop'):
         """
         Generate data points that ALL belong to the SAME segmentation task
         (anatomical structure).  Unlike the multi-task collectors, every sample
@@ -655,6 +732,16 @@ class DataGenerator:
         3. If >= 32 samples collected → shuffle and return.
         4. If fewer than 32 → discard and repeat from step 1 with a new task.
 
+        Parameters
+        ----------
+        extraction_mode : 'crop' (default) or 'fullslice'
+            'crop'      → label-guided 128–256 px patch crop (_extract_patch_2d).
+                          In-plane dimensions must be >= 128; smaller volumes
+                          are skipped automatically.
+            'fullslice' → maximum centered square (min(H, W) × min(H, W))
+                          resized to 128×128 (_extract_fullslice_2d).  Works
+                          for any in-plane size; nothing is skipped.
+
         Returns
         -------
         x_np   : (N, 128, 128, 1)  float32  — z-score images    [-5, 5]
@@ -668,9 +755,9 @@ class DataGenerator:
             dimensions = ['x', 'y', 'z']
 
         self.dataloader.current_ids = self.dataloader.train_ids
-        self._norm_cache.clear()
-        self._universeg_cache.clear()
-        self._slice_index_cache.clear()
+        # NOTE: caches are intentionally NOT cleared here.
+        # The underlying data is static across all dataset generation calls,
+        # so norm, universeg, and slice-index results remain valid.
 
         start = time.time()
         print("Creating new Data Points ...")
@@ -720,28 +807,36 @@ class DataGenerator:
                 modality_str = current_dict.get('modality', 'UNKNOWN')
                 is_mri = 0.0 if modality_str == 'CT' else 1.0
 
+                y_raw = current_dict['segmentations']
+                if isinstance(y_raw, list) and len(y_raw) == 1:
+                    y_raw = np.asarray(y_raw[0])
+
+                dim_idx = 'xyz'.index(d)
+
+                if isinstance(y_raw, list):
+                    vol_shape = np.asarray(y_raw[0]).shape
+                else:
+                    vol_shape = np.asarray(y_raw).shape
+
+                # 'crop' mode requires the patch to fit inside the slice.
+                # 'fullslice' resizes whatever it gets, so any size is valid.
+                slice_dims = [s for j, s in enumerate(vol_shape) if j != dim_idx]
+                if extraction_mode == 'crop' and min(slice_dims) < max(self.height, self.width):
+                    continue
+
+                # Use pre-computed valid-slice index to skip patients / slices
+                # that don't contain the task — the cache already tells us this.
+                valid_index   = self._get_slice_index(y_raw, pid, dim_idx)
+                candidate_arr = valid_index.get(task, np.array([], dtype=np.int64))
+                if candidate_arr.size == 0:
+                    continue  # patient has no valid slices for this task in this dimension
+
                 x, y  = self._prepare_volume(current_dict, pid=pid)
                 x_u   = self._prepare_universeg_volume(current_dict, pid=pid)
                 if isinstance(y, list) and len(y) == 1:
                     y = np.asarray(y[0])
 
-                # Skip if in-plane extents are too small
-                dim_idx = 'xyz'.index(d)
-                slice_dims = [s for j, s in enumerate(x.shape) if j != dim_idx]
-                if min(slice_dims) < max(self.height, self.width):
-                    continue
-
-                # Use pre-computed valid-slice index to skip patients / slices
-                # that don't contain the task — avoids np.unique + full-slice scan.
-                valid_index   = self._get_slice_index(y, pid, dim_idx)
-                candidate_arr = valid_index.get(task, np.array([], dtype=np.int64))
-                if candidate_arr.size == 0:
-                    continue  # patient has no valid slices for this task in this dimension
-
-                if isinstance(y, list):
-                    y_shape = np.asarray(y[0]).shape[dim_idx]
-                else:
-                    y_shape = np.asarray(y).shape[dim_idx]
+                y_shape = vol_shape[dim_idx]
 
                 slice_indices = candidate_arr.copy()
                 np.random.shuffle(slice_indices)
@@ -763,6 +858,7 @@ class DataGenerator:
                         max_number_labels=1,
                         primary_task=task,
                         x_u=x_u,
+                        extraction_mode=extraction_mode,
                     )
                     if result is None:
                         continue
