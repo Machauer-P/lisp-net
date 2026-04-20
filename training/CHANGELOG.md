@@ -1,6 +1,31 @@
 # Model Development Changelog
 
-This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies. 
+This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies.
+
+## [v320] - Control Experiment: v21 Architecture + Modern Data Pipeline
+*Implementation: `prompt_unet_320.py`, `p_unet_320.ipynb`*
+
+**Research question:** Do the performance differences between v21 and later models (v292–v313) come **purely from the new vs old training data / preprocessing**?
+
+**Identical to v21**
+- **Architecture:** Filter schedule `[32, 64, 128, 256, 512]` + 1024 bottleneck. `Conv2DTranspose` decoder. No SE attention. Plain `Add()` for prompt fusion.
+- **Augmentation:** 10 % probability per stage — photometric (RandomBrightness, RandomContrast, GaussianNoise), geometric (RandomFlip, RandomRotation ±5 %, RandomZoom ±5 %, RandomTranslation ±5 %), morphological (cut-out, false positives, selective erode/dilate).
+- **Loss & Optimizer:** `binary_crossentropy` + `Adam` + `ExponentialDecay` (initial LR 1e-3, decay rate 0.85, staircase every 2000 epochs × steps/epoch).
+- **Hyperparameters:** 3664 epochs, batch 128, dp_training 3500, dp_testing 1000, offset 12, max_number_labels 4, new\_ds every 75 epochs, validation every 300 epochs.
+
+**Different from v21 (infrastructure only)**
+- **DataGenerator:** Current `DataGenerator.py` (isotropic volumes, label-guided 128×128 patch crop, pure-numpy, fast valid-slice index via O(1) foreground pre-computation).
+- **Normalization:** `universal_normalization` (CT hard-coded HU stats, MRI masked z-score with percentile clipping) — same as v292+.
+- **Training data:** 3 datasets via `DataLoader_npz`: `nako_combined`, `total_seg_combined`, `msd_combined` — same as v310–313.
+- **`train_step()`:** Decorated with `@tf.function` (graph mode execution).
+- **`train_epoch()`:** Native `for z in train_dataset` loop (no manual `iter` / `next`).
+- **Pipeline:** Persistent `tf.data` from-generator graph built once; only numpy buffer swapped on refresh.
+
+**Interpretation**
+- v320 vs v21: isolates the effect of **new data + preprocessing** (architecture/augmentation fixed).
+- v320 vs v310–313: isolates the effect of **architecture + augmentation** (data fixed).
+
+---
 
 ## [v313] - Float32 + SE Attention
 *Implementation: `prompt_unet_313.py`, `p_unet_313.ipynb`*
