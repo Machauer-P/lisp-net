@@ -320,4 +320,5 @@ def plot_vol_slices(img, mask, num_slices=5, alpha=0.5, figsize=(15, 5)):
         ax.axis('off')
         
     plt.tight_layout()
+    plt.close(fig)
     return fig
