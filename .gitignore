@@ -4,6 +4,7 @@ __pycache__/
 # Data
 data/test_data/HanSeg/
 data/test_data/2d/
+data/test_data/Mouse
 
 # Augm test results
 utils/augmentation_results/
