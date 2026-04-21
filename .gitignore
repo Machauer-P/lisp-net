@@ -1,10 +1,8 @@
 # Python cache
 __pycache__/
 
-# Data
-data/test_data/HanSeg/
-data/test_data/2d/
-data/test_data/Mouse
+# Test Data
+data/test_data/*/
 
 # Augm test results
 utils/augmentation_results/
