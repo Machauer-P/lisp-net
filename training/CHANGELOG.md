@@ -27,6 +27,22 @@ This document tracks the evolution of the Prompt U-Net segmentation model, from 
 
 ---
 
+<!-- ## [v315] - Old Filter Schedule Ablation Variant
+*Implementation: `prompt_unet_315.py`, `p_unet_315.ipynb`*
+
+**Architecture**
+- **Old Filter Schedule:** Restored the original `[32, 64, 128, 256, 512]` filter schedule to measure the exact impact of the wider representation used in the v310-v312 generation.
+- **Identical to v312 otherwise:** Uses pure `Conv2D` across all stages, maintains SE attention removal, and relies on pure float32 training. -->
+
+## [v314] - Depthwise Separable Convolutions Ablation Variant
+*Implementation: `prompt_unet_314.py`, `p_unet_314.ipynb`*
+
+**Architecture**
+- **SeparableConv2D:** Replaced standard 3x3 `Conv2D` layers with Depthwise `SeparableConv2D` layers across all encoder and decoder stages to ablate spatial versus cross-channel correlation processing.
+- **Identical to v313 otherwise:** Filter schedule `[48, 96, 192, 256, 384]`, SE attention enabled on prompt skips, and pure float32 training.
+
+---
+
 ## [v313] - Float32 + SE Attention
 *Implementation: `prompt_unet_313.py`, `p_unet_313.ipynb`*
 
