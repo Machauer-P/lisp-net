@@ -303,55 +303,93 @@ class PromptUNet:
 
         The prompt-morphological step is kept separate in
         `v21_augmentation_morph()` because it requires scipy (numpy) ops.
+
+        IMPORTANT: uses explicit tf.cond (not Python `if`) so that AutoGraph
+        cannot misfire and produce wrong output shapes when the function is
+        traced by `.map()`.  The Python-`if`-with-tf-Tensor pattern is only
+        safe inside tf.py_function (eager), not in a compiled map step.
         """
-        # --- photometric (x only) ---
-        do_photo = tf.random.uniform([]) < 0.1
-        if do_photo:
-            x_aug = self._photo_aug(tf.expand_dims(x, 0))   # needs batch dim
-            x_aug = tf.squeeze(x_aug, 0)
+        # --- photometric (x only, 10%) ---
+        def _do_photo():
+            x_aug = self._photo_aug(tf.expand_dims(x, 0))  # (1,H,W,1)
+            x_aug = tf.squeeze(x_aug, 0)                   # (H,W,1)
             x_min = tf.reduce_min(x_aug)
             x_max = tf.reduce_max(x_aug)
-            x = (x_aug - x_min) / (x_max - x_min + 1e-8)
+            return (x_aug - x_min) / (x_max - x_min + 1e-8)
 
-        # --- geometric (x, y, p together) ---
-        # NOTE: _geo_aug must be called HERE (graph mode), NOT inside
-        # tf.py_function, because RandomRotation/RandomZoom have a TF bug
-        # with 4-channel tensors when executed inside EagerPyFunc.
-        do_geo = tf.random.uniform([]) < 0.1
-        if do_geo:
-            concatenated = tf.concat([x, y, p], axis=-1)      # (H,W,4)
-            concatenated = tf.expand_dims(concatenated, 0)    # (1,H,W,4)
-            concatenated = self._geo_aug(concatenated, training=True)
-            concatenated = concatenated[0, ...]                # (H,W,4)
-            x, y, p = tf.split(concatenated,
-                                num_or_size_splits=[1, 1, 2], axis=-1)
+        x = tf.cond(tf.random.uniform([]) < 0.1, _do_photo, lambda: x)
+
+        # --- geometric (x, y, p together, 10%) ---
+        # NOTE: _geo_aug is called here in graph mode (not in tf.py_function)
+        # because RandomRotation/RandomZoom crash on 4-ch tensors in EagerPyFunc.
+        def _do_geo():
+            cat = tf.concat([x, y, p], axis=-1)           # (H,W,4)
+            cat = tf.expand_dims(cat, 0)                   # (1,H,W,4)
+            cat = self._geo_aug(cat, training=True)        # (1,H,W,4)
+            cat = cat[0, ...]                              # (H,W,4)
+            x_g, y_g, p_g = tf.split(cat, [1, 1, 2], axis=-1)
+            return x_g, y_g, p_g
+
+        x, y, p = tf.cond(
+            tf.random.uniform([]) < 0.1,
+            _do_geo,
+            lambda: (x, y, p),
+        )
 
         return x, y, p, m
 
     def v21_augmentation_morph(self, x, y, p):
         """
-        v21 prompt-morphological augmentation — scipy/numpy ops.
-        Called via `tf.py_function` so it runs eagerly.
+        v21 prompt-morphological augmentation — **pure numpy** implementation.
+        Called via `tf.py_function` so the inputs are EagerTensors and
+        `.numpy()` is available.
 
         Stage
         -----
         Prompt morph → p (segm channel only, 10 % probability)
-        """
-        # --- prompt morphological (p segm channel only) ---
-        if random.random() < 0.1:
-            p_segm = p[..., 1:2]
-            p_segm = _cut_out(p_segm, max_fraction_upper=0.20)
-            p_segm = _add_false_positives(p_segm, max_fraction_upper=0.001)
-            p_segm = tf.squeeze(p_segm)
-            p_segm = _random_morphological_perturbation(
-                p_segm,
-                max_dilate_kernel=2, max_erode_kernel=2,
-                min_erode_size=30,  min_dilate_size=30,
-            )
-            p_segm = tf.expand_dims(p_segm, -1)
-            p = tf.concat([p[..., 0:1], p_segm], axis=-1)
 
-        return x, y, p   # no batch dim; .batch() adds it later
+        WHY pure numpy?
+        Using TF ops (tf.squeeze, tf.numpy_function, tf.switch_case) nested
+        *inside* tf.py_function causes `set_shape` to resolve against unknown
+        symbolic shapes instead of the concrete (128, 128) tensor, corrupting
+        downstream tf.concat with shapes like [128,128,0,1].
+        """
+        if random.random() >= 0.1:
+            return x, y, p
+
+        # ── convert to numpy (safe inside tf.py_function) ────────────────
+        x_np = np.asarray(x, dtype=np.float32)
+        y_np = np.asarray(y, dtype=np.float32)
+        p_np = np.asarray(p, dtype=np.float32)   # (H, W, 2)
+
+        p_segm = p_np[..., 1].copy()              # (H, W)  — segmentation ch.
+
+        # Cut out (simulate user omitting some foreground pixels)
+        frac      = random.uniform(0.0, 0.20)
+        cut_mask  = (p_segm == 1) & (np.random.rand(*p_segm.shape) < frac)
+        p_segm[cut_mask] = 0.0
+
+        # Add false positives
+        max_fp  = np.random.uniform(0.0, 0.001)
+        fp_mask = (p_segm == 0) & (np.random.rand(*p_segm.shape) < max_fp)
+        p_segm[fp_mask] = 1.0
+
+        # Morphological perturbation (0 = erode, 1 = dilate, 2 = no-op)
+        rand_op = np.random.randint(0, 3)
+        if rand_op < 2:
+            k = np.random.randint(1, 3)           # kernel size in {1, 2}
+            if rand_op == 0:
+                p_segm = _selective_erode(p_segm,  k, min_size=30)
+            else:
+                p_segm = _selective_dilate(p_segm, k, min_size=30)
+
+        p_np = np.concatenate(
+            [p_np[..., 0:1], p_segm[..., np.newaxis]], axis=-1
+        )  # (H, W, 2)
+
+        return (tf.constant(x_np),
+                tf.constant(y_np),
+                tf.constant(p_np))
 
     def v21_augmentation(self, x, y, p):
         """
