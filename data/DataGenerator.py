@@ -310,6 +310,26 @@ class DataGenerator:
             )
         return result
 
+    def _extract_native_2d(self, x_2d, total_label, x_2d_r, total_label_r,
+                           x_u_2d=None, x_u_2d_r=None):
+        """
+        Extract the full cross-section exactly as it appears in the origin volume
+        without any uniform reshaping, cropping, or interpolation logic. This preserves 
+        the native aspect ratio and image sizes exactly for downstream tiling architectures.
+        """
+        result = (
+            x_2d[..., np.newaxis].astype(np.float32),
+            total_label[..., np.newaxis].astype(np.float32),
+            x_2d_r[..., np.newaxis].astype(np.float32),
+            total_label_r[..., np.newaxis].astype(np.float32),
+        )
+        if x_u_2d is not None:
+            return result + (
+                x_u_2d[..., np.newaxis].astype(np.float32),
+                x_u_2d_r[..., np.newaxis].astype(np.float32),
+            )
+        return result
+
     def _sample_offset(self, i, offset, length):
         """Return a random signed offset ±[1..offset] that stays in-bounds.
 
@@ -433,11 +453,13 @@ class DataGenerator:
 
         Parameters
         ----------
-        extraction_mode : 'crop' (default) or 'fullslice'
+        extraction_mode : 'crop' (default), 'fullslice', or 'native'
             'crop'      → label-guided patch crop with optional scale jitter
                           (_extract_patch_2d). Requires in-plane dims >= 128.
             'fullslice' → maximum centered square resized to target resolution
                           (_extract_fullslice_2d). Works for any in-plane size.
+            'native'    → keeps exact native slice shape matching the source volume.
+                          (_extract_native_2d). Returns variable-sized arrays.
         """
         if isinstance(y, list):
             y_2d   = [self._get_2d_slice(np.asarray(seg), i,   d) for seg in y]
@@ -462,6 +484,11 @@ class DataGenerator:
 
         if extraction_mode == 'fullslice':
             patch = self._extract_fullslice_2d(
+                x_2d, total_label, x_2d_r, total_label_r,
+                x_u_2d, x_u_2d_r,
+            )
+        elif extraction_mode == 'native':
+            patch = self._extract_native_2d(
                 x_2d, total_label, x_2d_r, total_label_r,
                 x_u_2d, x_u_2d_r,
             )
@@ -637,13 +664,21 @@ class DataGenerator:
         return x_new, y_new, prompt, offset_list, m_new
 
     def _to_numpy_arrays(self, x_lst, y_lst, p_lst, m_lst):
-        """Stack lists of (128,128,C) arrays into (N,128,128,C) float32 arrays."""
-        return (
-            np.stack(x_lst).astype(np.float32),
-            np.stack(y_lst).astype(np.float32),
-            np.stack(p_lst).astype(np.float32),
-            np.array(m_lst, dtype=np.float32),
-        )
+        """Stack lists of arrays. If shapes vary natively, creates object arrays naturally."""
+        try:
+            return (
+                np.stack(x_lst).astype(np.float32),
+                np.stack(y_lst).astype(np.float32),
+                np.stack(p_lst).astype(np.float32),
+                np.array(m_lst, dtype=np.float32),
+            )
+        except ValueError:
+            return (
+                np.array(x_lst, dtype=object),
+                np.array(y_lst, dtype=object),
+                np.array(p_lst, dtype=object),
+                np.array(m_lst, dtype=np.float32),
+            )
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -896,7 +931,11 @@ class DataGenerator:
         print(f'It took {time.time() - start:.0f} seconds')
 
         x_np, y_np, p_np, m_np = self._to_numpy_arrays(x_new, y_new, prompt, m_new)
-        x_u_np = np.stack(xu_new).astype(np.float32)
+        
+        try:
+            x_u_np = np.stack(xu_new).astype(np.float32)
+        except ValueError:
+            x_u_np = np.array(xu_new, dtype=object)
         
         if return_task:
             return x_np, y_np, p_np, x_u_np, m_np, offset_list, task

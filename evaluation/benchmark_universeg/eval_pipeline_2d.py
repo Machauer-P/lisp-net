@@ -175,17 +175,25 @@ class EvalPipeline2D:
         if len(sx_u) < 16:
             print(f"  WARNING: support set has only {len(sx_u)} samples (expected 16).")
 
-        # UniverSeg expects (S, 1, H, W)
-        support_images = (
-            torch.from_numpy(sx_u.squeeze(-1))   # (S, 128, 128)
-            .float().unsqueeze(1)                  # (S, 1, 128, 128)
-            .to(self.device)
-        )
-        support_labels = (
-            torch.from_numpy(sy.squeeze(-1))
-            .float().unsqueeze(1)
-            .to(self.device)
-        )
+        support_images_list = []
+        support_labels_list = []
+        
+        for i in range(len(sx_u)):
+            # The input might be natively differently shaped across support pieces
+            img = torch.from_numpy(sx_u[i].squeeze(-1)).float().unsqueeze(0).unsqueeze(0).to(self.device) # (1, 1, H, W)
+            lbl = torch.from_numpy(sy[i].squeeze(-1)).float().unsqueeze(0).unsqueeze(0).to(self.device)   # (1, 1, H, W)
+            
+            # For UniverSeg, unconditionally resize everything to 128x128
+            img_128 = torch.nn.functional.interpolate(img, size=(128, 128), mode='bilinear', align_corners=False)
+            lbl_128 = torch.nn.functional.interpolate(lbl, size=(128, 128), mode='nearest')
+            
+            support_images_list.append(img_128.squeeze(0)) # (1, 128, 128)
+            support_labels_list.append(lbl_128.squeeze(0)) # (1, 128, 128)
+
+        # UniverSeg expects (S, 1, 128, 128)
+        support_images = torch.stack(support_images_list, dim=0)
+        support_labels = torch.stack(support_labels_list, dim=0)
+        
         return support_images, support_labels
 
     # ------------------------------------------------------------------
@@ -215,56 +223,61 @@ class EvalPipeline2D:
         t0 = time.time()
 
         if model_name == 'prompt_unet':
-            x_arr = query['x']   # (N, 128, 128, 1)  images in [-5, 5]
-            p_arr = query['p']   # (N, 128, 128, 2)  prompts
-            
-            # Pass all N samples in one shot — on CPU there is no VRAM limit, so chunking
-            # only adds overhead (multiple _fast_predict_fn calls + numpy concatenations).
-            preds_pn = model.predict(x_arr, p_arr, batch_size=N, threshold=threshold)
+            x_arr = query['x']   # object array (N, arrays...)
+            p_arr = query['p']   # object array (N, arrays...)
             
             for i in range(N):
-                dice_p = dice_numpy(y_arr[i].squeeze(), preds_pn[i].squeeze())
+                # Pass each sample individually because varying native spatial shapes 
+                # prevent monolithic batching (N, H, W, ...). Prompt-UNet processes them  
+                # gracefully with its native sliding-window inference layout (Adaptive Tiling).
+                x_i = np.expand_dims(x_arr[i], axis=0) # (1, H, W, 1)
+                p_i = np.expand_dims(p_arr[i], axis=0) # (1, H, W, 2)
+                
+                preds_pn = model.predict(x_i, p_i, batch_size=1, threshold=threshold)
+                
+                dice_p = dice_numpy(y_arr[i].squeeze(), preds_pn[0].squeeze())
                 dices.append(dice_p)
 
         elif model_name == 'universeg':
             # Prepare UniverSeg support once per bundle
             support_images, support_labels = self._load_universeg_support(bundle_path)
             
-            x_u_np = query['x_u']   # (N, 128, 128, 1)  in [0, 1] — baked in at generation time
-
+            x_u_np = query['x_u']   # object array of arrays
+            
             if x_u_np is None:
                 raise ValueError(
                     f"Bundle '{bundle_path}' is missing 'x_u' key. "
                     "Re-generate it with generate_2d_test_data.py."
                 )
             
-            # Batch inference for PyTorch
-            # VERY IMPORTANT: UniverSeg performs dense Cross-Attention against S=16 support images. 
-            # A Batch size >> 1 results in combinatorial memory explosion (OOM). Safe size is 1 or 2!
-            bsz = 1
-            for i in range(0, N, bsz):
-                sys_bsz = min(bsz, N - i)
-                x_u_batch_np = x_u_np[i:i+sys_bsz] # (sys_bsz, 128, 128, 1)
-                x_u_batch = (
-                    torch.from_numpy(x_u_batch_np.squeeze(-1)) # (sys_bsz, 128, 128)
-                    .float()
-                    .unsqueeze(1) # (sys_bsz, 1, 128, 128)
-                    .to(self.device)
-                )
-
-                # expand support for the batch
-                # support_images is (S, 1, 128, 128)
-                sup_imgs_batch = support_images.unsqueeze(0).expand(sys_bsz, -1, -1, -1, -1) # (sys_bsz, S, 1, 128, 128)
-                sup_lbls_batch = support_labels.unsqueeze(0).expand(sys_bsz, -1, -1, -1, -1) # (sys_bsz, S, 1, 128, 128)
+            # Batch size is effectively 1 since images have native independent sizes
+            for i in range(N):
+                x_i = torch.from_numpy(x_u_np[i].squeeze(-1)).float().unsqueeze(0).unsqueeze(0).to(self.device) # (1, 1, H, W)
+                
+                # UniverSeg relies heavily on whole-volume context and global relative scaling.
+                # It does not perform well with isolated local patches, preventing the use 
+                # of Prompt-UNet's sliding-window adaptive tiling.
+                # Therefore, we utilize UniverSeg's native intended strategy for arbitrary test sizes:
+                # a naive interpolation of the full cross-section into exactly 128x128.
+                x_i_128 = torch.nn.functional.interpolate(x_i, size=(128, 128), mode='bilinear', align_corners=False)
+                
+                # Expand standard support for batch compatibility
+                sup_imgs_batch = support_images.unsqueeze(0) # (1, S, 1, 128, 128)
+                sup_lbls_batch = support_labels.unsqueeze(0) # (1, S, 1, 128, 128)
 
                 with torch.no_grad():
-                    logits = model(x_u_batch, sup_imgs_batch, sup_lbls_batch) # (sys_bsz, 1, 128, 128)
-                    u_preds = torch.sigmoid(logits.squeeze(1)) # (sys_bsz, 128, 128)
+                    logits = model(x_i_128, sup_imgs_batch, sup_lbls_batch) # (1, 1, 128, 128)
+                    
+                    # To compare FAIRLY with the native-resolution ground truth, we resize the 
+                    # 128x128 logit prediction back up to the native shape (H, W).
+                    native_shape = (x_u_np[i].shape[0], x_u_np[i].shape[1])
+                    logits_native = torch.nn.functional.interpolate(logits, size=native_shape, mode='bilinear', align_corners=False)
+                    
+                    u_preds = torch.sigmoid(logits_native.squeeze()) # (H, W)
                     u_preds = (u_preds > threshold).float().cpu().numpy()
 
-                for j in range(sys_bsz):
-                    dice_u = dice_numpy(y_arr[i+j].squeeze(), u_preds[j])
-                    dices.append(dice_u)
+                dice_u = dice_numpy(y_arr[i].squeeze(), u_preds)
+                dices.append(dice_u)
         else:
             raise ValueError(f"Unknown model_name: {model_name}")
 

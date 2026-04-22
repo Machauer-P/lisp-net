@@ -75,20 +75,20 @@ def save_2d_npz_bundle(query_data, support_data, filename, path="."):
 
     kwargs = dict(
         # Query — z-score (Prompt-UNet)
-        x        = np.asarray(query_data['x'],        dtype=np.float32),
+        x        = np.asarray(query_data['x']),
         # Query — UniverSeg normalisation
-        x_u      = np.asarray(query_data['x_u'],      dtype=np.float32),
+        x_u      = np.asarray(query_data['x_u']),
         # Query — shared
-        y        = np.asarray(query_data['y'],        dtype=np.float32),
-        p        = np.asarray(query_data['p'],        dtype=np.float32),
+        y        = np.asarray(query_data['y']),
+        p        = np.asarray(query_data['p']),
         offset   = np.asarray(query_data['offset'],   dtype=np.int32),
         modality = np.asarray(query_data['modality'], dtype=np.float32),
         # Support — z-score (Prompt-UNet)
-        sx         = np.asarray(support_data['sx'],         dtype=np.float32),
+        sx         = np.asarray(support_data['sx']),
         # Support — UniverSeg normalisation
-        sx_u       = np.asarray(support_data['sx_u'],       dtype=np.float32),
+        sx_u       = np.asarray(support_data['sx_u']),
         # Support — shared
-        sy         = np.asarray(support_data['sy'],         dtype=np.float32),
+        sy         = np.asarray(support_data['sy']),
         s_modality = np.asarray(support_data['s_modality'], dtype=np.float32)
     )
     if 'task' in query_data:
@@ -118,7 +118,7 @@ def load_2d_npz_bundle(filename, path="."):
         filename += '.npz'
     filepath = os.path.join(path, filename)
 
-    bundle = np.load(filepath)
+    bundle = np.load(filepath, allow_pickle=True)
 
     query_data = {
         'x':        bundle['x'],
