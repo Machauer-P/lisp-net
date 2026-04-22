@@ -70,11 +70,12 @@ def gen_save_ds(dg, path, ds_name, offset_val,
     for i in range(num_ds):
         print(f"\nGenerating dataset {i + 1}/{num_ds}...")
 
-        x_np, y_np, p_np, x_u_np, m_np, offset_list = dg.get_data_points_from_one_task_numpy(
+        x_np, y_np, p_np, x_u_np, m_np, offset_list, task = dg.get_data_points_from_one_task_numpy(
             max_data_points=max_data_points + len_p_set,
             offset=offset_val,
             dimensions=dimensions,
-            extraction_mode='fullslice'
+            extraction_mode='fullslice',
+            return_task=True
         )
 
         total       = len(x_np)
@@ -99,6 +100,7 @@ def gen_save_ds(dg, path, ds_name, offset_val,
             'p':        p_np[query_start:],
             'offset':   np.array(offset_list[query_start:], dtype=np.int32),
             'modality': m_np[query_start:],
+            'task':     task,
         }
 
         save_2d_npz_bundle(query_data, support_data,

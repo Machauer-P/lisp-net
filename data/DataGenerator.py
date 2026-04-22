@@ -716,7 +716,8 @@ class DataGenerator:
 
     def get_data_points_from_one_task_numpy(self, max_data_points=116, offset=5,
                                             dimensions=None,
-                                            extraction_mode='crop'):
+                                            extraction_mode='crop',
+                                            return_task=False):
         """
         Generate data points that ALL belong to the SAME segmentation task
         (anatomical structure).  Unlike the multi-task collectors, every sample
@@ -896,6 +897,9 @@ class DataGenerator:
 
         x_np, y_np, p_np, m_np = self._to_numpy_arrays(x_new, y_new, prompt, m_new)
         x_u_np = np.stack(xu_new).astype(np.float32)
+        
+        if return_task:
+            return x_np, y_np, p_np, x_u_np, m_np, offset_list, task
         return x_np, y_np, p_np, x_u_np, m_np, offset_list
 
     def get_data_points_from_one_task(self, max_data_points=116, offset=5,

@@ -73,8 +73,7 @@ def save_2d_npz_bundle(query_data, support_data, filename, path="."):
         filename = filename[:-4]
     filepath = os.path.join(path, filename)
 
-    np.savez_compressed(
-        filepath,
+    kwargs = dict(
         # Query — z-score (Prompt-UNet)
         x        = np.asarray(query_data['x'],        dtype=np.float32),
         # Query — UniverSeg normalisation
@@ -90,8 +89,12 @@ def save_2d_npz_bundle(query_data, support_data, filename, path="."):
         sx_u       = np.asarray(support_data['sx_u'],       dtype=np.float32),
         # Support — shared
         sy         = np.asarray(support_data['sy'],         dtype=np.float32),
-        s_modality = np.asarray(support_data['s_modality'], dtype=np.float32),
+        s_modality = np.asarray(support_data['s_modality'], dtype=np.float32)
     )
+    if 'task' in query_data:
+        kwargs['task'] = np.asarray(query_data['task'], dtype=np.int32)
+        
+    np.savez_compressed(filepath, **kwargs)
     print(f"  Saved: {filepath}.npz")
 
 
@@ -124,6 +127,7 @@ def load_2d_npz_bundle(filename, path="."):
         'p':        bundle['p'],
         'offset':   bundle['offset'],
         'modality': bundle['modality'],
+        'task':     bundle['task'] if 'task' in bundle else None,
     }
     support_data = {
         'sx':         bundle['sx']   if 'sx'   in bundle else None,

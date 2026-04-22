@@ -205,6 +205,9 @@ class EvalPipeline2D:
             path=str(Path(bundle_path).parent),
         )
 
+        task_arr = query.get('task')
+        task_id = int(task_arr) if task_arr is not None else None
+
         y_arr = query['y']   # (N, 128, 128, 1)  binary labels
         N = len(y_arr)
 
@@ -268,7 +271,7 @@ class EvalPipeline2D:
         t1 = time.time()
         time_taken = t1 - t0
 
-        return np.mean(dices), time_taken
+        return np.mean(dices), time_taken, task_id
 
     # ------------------------------------------------------------------
     # Full pipeline
@@ -308,13 +311,14 @@ class EvalPipeline2D:
 
         results = []
         for pair in tqdm(pairs, desc=f"Evaluating {model_name}"):
-            dice_mean, time_taken = self.evaluate_pair(pair, model, model_name)
+            dice_mean, time_taken, task_id = self.evaluate_pair(pair, model, model_name)
             results.append({
                 'index': pair['index'],
                 'name':  pair['name'],
                 'model': model_name,
                 'dice':  dice_mean,
                 'time':  time_taken,
+                'task':  task_id,
             })
             
             # Ensure memory traces from last pair are purged
