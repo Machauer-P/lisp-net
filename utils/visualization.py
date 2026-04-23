@@ -183,8 +183,8 @@ def visualize_bundle(path_to_npz):
     vmin, vmax = (-5, 5) if sx_key == 'sx' else (0, 1)
     
     for i in range(s_display):
-        img = support[sx_key][i, ..., 0]
-        lbl = support['sy'][i, ..., 0]
+        img = support[sx_key][i][..., 0]
+        lbl = support['sy'][i][..., 0]
         # Modality: 0=CT, 1=MRI
         mod_str = "MRI" if support['s_modality'][i] == 1.0 else "CT"
         
@@ -207,10 +207,10 @@ def visualize_bundle(path_to_npz):
     fig.suptitle("Query Set Pairs", fontsize=16)
     
     for i in range(q_display):
-        x_i = query['x'][i, ..., 0]
-        y_i = query['y'][i, ..., 0]
-        p_img = query['p'][i, ..., 0]
-        p_lbl = query['p'][i, ..., 1]
+        x_i = query['x'][i][..., 0]
+        y_i = query['y'][i][..., 0]
+        p_img = query['p'][i][..., 0]
+        p_lbl = query['p'][i][..., 1]
         offset = query['offset'][i]
         mod_str = "MRI" if query['modality'][i] == 1.0 else "CT"
         
