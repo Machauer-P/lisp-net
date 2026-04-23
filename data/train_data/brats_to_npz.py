@@ -32,10 +32,9 @@ BraTS-GLI (arXiv 2405.18368):
       4 – RC    Resection Cavity            (NEW in 2024 post-treatment challenge)
   • Not all four labels are present in every patient (e.g. label 4 absent in
     treatment-naïve cases / recurrence not yet resected).
-  • One of the 4 sequences is selected per run (default: t1c). All 4 are loaded
-    only if `--sequence all` is requested, in which case the image is saved as a
-    4-channel stack (C, Z, Y, X) – NOTE: the resampler currently handles single-
-    channel volumes; multi-channel mode skips resampling.
+  • One of the 4 sequences is selected per run (default: t1c). If `--sequence all` is
+    requested, all 4 contrasts are extracted and stored as independent 1-channel images
+    (e.g., patientID_t1c, patientID_t2f) within a single consolidated .npz file.
 
 BraTS-MEN-RT (arXiv 2405.18383):
   • Only T1c (post-contrast) is available; images are in NATIVE acquisition space.
@@ -97,22 +96,8 @@ def process_brats_gli(
     crop: bool = True,
     margin: int = 10,
     resample: bool = True,
+    max_patients: int = None,
 ):
-    """
-    Process BraTS-GLI (.nii.gz) dataset into a .npz file.
-
-    Parameters
-    ----------
-    data_dir  : Root directory that contains one sub-folder per patient.
-    output_path: Output filename (without .npz).
-    sequence  : Which MRI sequence to use as the image channel.
-                One of {"t1c", "t1n", "t2f", "t2w", "all"}.
-                "all" stores a 4-channel stack (C, Z, Y, X).
-    crop      : Apply anatomical cropping to the non-zero brain region.
-    margin    : Voxel margin added around the bounding box when cropping.
-    resample  : Resample to 1 mm isotropic after cropping.
-                NOTE: BraTS-GLI is already 1 mm isotropic – set False to skip.
-    """
     if sequence not in (*BRATS_GLI_SEQUENCES, "all"):
         raise ValueError(
             f"sequence must be one of {(*BRATS_GLI_SEQUENCES, 'all')}, got '{sequence}'"
@@ -122,46 +107,68 @@ def process_brats_gli(
     patient_folders = sorted(
         [f.path for f in os.scandir(data_dir) if f.is_dir()]
     )
+    if max_patients is not None and max_patients > 0 and len(patient_folders) > max_patients:
+        import random
+        # Setting seed to ensure reproducible subsets if rerun
+        random.seed(42)
+        patient_folders = random.sample(patient_folders, max_patients)
 
     for i, p_folder in enumerate(patient_folders):
         p_idx = os.path.basename(p_folder)
         print(f"\n[{i + 1}/{len(patient_folders)}] Processing {p_idx} …")
 
-        # ------------------------------------------------------------------
-        # 1. Locate segmentation file  (*-seg.nii.gz)
-        # ------------------------------------------------------------------
         seg_paths = glob.glob(os.path.join(p_folder, "*-seg.nii.gz"))
         if not seg_paths:
             print(f"  WARNING: no segmentation found for {p_idx}, skipping.")
             continue
 
         seg_sitk, seg_array = load_medical_image(seg_paths[0], dtype=np.uint8)
-
-        # Report which labels are actually present in this case
         present = sorted(int(v) for v in np.unique(seg_array) if v != 0)
         label_names = [BRATS_GLI_LABEL_MAP.get(v, f"label_{v}") for v in present]
         print(f"  Labels present: {dict(zip(present, label_names))}")
 
-        # ------------------------------------------------------------------
-        # 2. Load the requested MRI sequence(s)
-        # ------------------------------------------------------------------
         if sequence == "all":
             channels = []
             ref_sitk = None
             for seq in BRATS_GLI_SEQUENCES:
                 seq_paths = glob.glob(os.path.join(p_folder, f"*-{seq}.nii.gz"))
                 if not seq_paths:
-                    print(f"  WARNING: sequence {seq} missing for {p_idx}, skipping patient.")
-                    channels = []
-                    break
+                    print(f"  WARNING: sequence {seq} missing for {p_idx}, skipping parameter.")
+                    continue
                 s_sitk, s_arr = load_medical_image(seq_paths[0])
                 if ref_sitk is None:
                     ref_sitk = s_sitk
-                channels.append(s_arr)
+                channels.append((seq, s_arr))
+            
             if not channels:
                 continue
-            # Stack: (4, Z, Y, X) – note: multi-channel skips resampling below
-            image_array = np.stack(channels, axis=0).astype(np.float32)
+                
+            for seq, img_arr in channels:
+                if img_arr.shape[-3:] != seg_array.shape:
+                    print(f"  WARNING: shape mismatch for {seq} – skipping.")
+                    continue
+                    
+                cur_img = img_arr.copy()
+                cur_seg = seg_array.copy()
+                
+                if crop:
+                    cur_img, cur_seg = crop_to_anatomy(
+                        cur_img, cur_seg, margin, threshold_fn=mri_signal_threshold
+                    )
+                    
+                if resample:
+                    vox = get_voxel_sizes(ref_sitk)
+                    cur_img = resample_isotropic(cur_img, vox, is_mask=False, is_ct=False)
+                    cur_seg = resample_isotropic(cur_seg, vox, is_mask=True, is_ct=False)
+                    cur_seg = cur_seg.astype(np.uint8)
+                    
+                dataset[f"{p_idx}_{seq}"] = {
+                    "image":         cur_img,
+                    "segmentations": cur_seg,
+                    "modality":      "MRI",
+                }
+            print(f"  → Success: {p_idx} (saved {len(channels)} contrasts individually)")
+
         else:
             seq_paths = glob.glob(os.path.join(p_folder, f"*-{sequence}.nii.gz"))
             if not seq_paths:
@@ -169,81 +176,38 @@ def process_brats_gli(
                 continue
             ref_sitk, image_array = load_medical_image(seq_paths[0])
 
-        # Verify image & mask are on the same grid
-        if image_array.shape[-3:] != seg_array.shape:
-            print(
-                f"  WARNING: shape mismatch  image={image_array.shape}  "
-                f"seg={seg_array.shape}  – skipping."
-            )
-            continue
+            if image_array.shape[-3:] != seg_array.shape:
+                print(f"  WARNING: shape mismatch – skipping.")
+                continue
 
-        # ------------------------------------------------------------------
-        # 3. Crop to brain bounding box (masks out skull-stripped zero voxels)
-        #    NOTE: BraTS-GLI is skull-stripped → the background is 0.  Cropping
-        #    removes unnecessary black borders (the standard 240×240×155 grid has
-        #    large zero-padded regions around the brain).
-        # ------------------------------------------------------------------
-        if crop:
-            print(f"  Cropping to brain bounding box (margin={margin}) …")
-            if sequence == "all":
-                # Use the t1c channel (index 0) as the anatomical reference
-                ref_channel = image_array[0]
-                ref_channel, seg_array = crop_to_anatomy(
-                    ref_channel, seg_array, margin, threshold_fn=mri_signal_threshold
-                )
-                # Crop remaining channels using the same bounding box
-                # (crop_to_anatomy returns the first pair only – recompute manually)
-                # TODO: expose bounding-box coordinates from crop_to_anatomy to
-                #       apply the same crop to all channels without recomputing.
-                image_array = np.stack(
-                    [ref_channel] +
-                    [
-                        crop_to_anatomy(
-                            image_array[c], seg_array, margin, threshold_fn=mri_signal_threshold
-                        )[0]
-                        for c in range(1, len(BRATS_GLI_SEQUENCES))
-                    ],
-                    axis=0,
-                )
-            else:
+            if crop:
+                print(f"  Cropping to brain bounding box (margin={margin}) …")
                 image_array, seg_array = crop_to_anatomy(
                     image_array, seg_array, margin, threshold_fn=mri_signal_threshold
                 )
 
-        # ------------------------------------------------------------------
-        # 4. Resample to 1 mm isotropic
-        #    BraTS-GLI is already 1 mm isotropic, so this is usually a no-op.
-        #    It is kept here to guard against edge cases in additional data.
-        # ------------------------------------------------------------------
-        if resample and sequence != "all":
-            vox = get_voxel_sizes(ref_sitk)
-            print(
-                f"  Spacing: {tuple(f'{v:.3f}' for v in vox)} mm  "
-                f"(target: 1.0 mm isotropic)"
-            )
-            image_array = resample_isotropic(image_array, vox, is_mask=False, is_ct=False)
-            seg_array   = resample_isotropic(seg_array,   vox, is_mask=True,  is_ct=False)
-            seg_array   = seg_array.astype(np.uint8)
-            print(f"  → Resampled shape: {image_array.shape}")
-        else:
-            print(f"  Shape: {image_array.shape}  (resampling skipped)")
+            if resample:
+                vox = get_voxel_sizes(ref_sitk)
+                print(f"  Spacing: {tuple(f'{v:.3f}' for v in vox)} mm (target: 1.0 mm isotropic)")
+                image_array = resample_isotropic(image_array, vox, is_mask=False, is_ct=False)
+                seg_array   = resample_isotropic(seg_array,   vox, is_mask=True,  is_ct=False)
+                seg_array   = seg_array.astype(np.uint8)
+                print(f"  → Resampled shape: {image_array.shape}")
+            else:
+                print(f"  Shape: {image_array.shape}  (resampling skipped)")
 
-        # ------------------------------------------------------------------
-        # 5. Store
-        # ------------------------------------------------------------------
-        dataset[p_idx] = {
-            "image":         image_array,
-            "segmentations": seg_array,
-            "modality":      "MRI",
-        }
-        print(f"  → Success: {p_idx}  shape={image_array.shape}")
+            dataset[p_idx] = {
+                "image":         image_array,
+                "segmentations": seg_array,
+                "modality":      "MRI",
+            }
+            print(f"  → Success: {p_idx}  shape={image_array.shape}")
 
     if dataset:
         _save_dataset_npz(dataset, output_path)
         print(f"\nLabel map: {BRATS_GLI_LABEL_MAP}")
     else:
         print("\nError: no patients were processed!")
-
 
 # ======================================================================
 # BraTS-MEN-RT processor
@@ -262,6 +226,7 @@ def process_brats_men_rt(
     crop: bool = True,
     margin: int = 15,
     resample: bool = True,
+    max_patients: int = None,
 ):
     """
     Process BraTS-MEN-RT (.nii.gz) dataset into a .npz file.
@@ -285,6 +250,10 @@ def process_brats_men_rt(
     patient_folders = sorted(
         [f.path for f in os.scandir(data_dir) if f.is_dir()]
     )
+    if max_patients is not None and max_patients > 0 and len(patient_folders) > max_patients:
+        import random
+        random.seed(42)
+        patient_folders = random.sample(patient_folders, max_patients)
 
     for i, p_folder in enumerate(patient_folders):
         p_idx = os.path.basename(p_folder)
@@ -409,7 +378,8 @@ if __name__ == "__main__":
         choices=[*BRATS_GLI_SEQUENCES, "all"],
         help=(
             "MRI sequence to use as image.  "
-            "'all' saves a 4-channel (C,Z,Y,X) stack."
+            "'all' saves all 4 contrasts independently "
+            "as 1-channel arrays in the .npz output."
         ),
     )
     gli_p.add_argument(
@@ -429,6 +399,12 @@ if __name__ == "__main__":
         type=int,
         default=10,
         help="Voxel margin for cropping (default: 10)",
+    )
+    gli_p.add_argument(
+        "--max-patients",
+        type=int,
+        default=None,
+        help="Maximum number of random patients to process. If set, randomly samples this many folders.",
     )
     gli_p.set_defaults(resample=True)
 
@@ -468,6 +444,12 @@ if __name__ == "__main__":
         default=15,
         help="Voxel margin for cropping (default: 15)",
     )
+    men_p.add_argument(
+        "--max-patients",
+        type=int,
+        default=None,
+        help="Maximum number of random patients to process. If set, randomly samples this many folders.",
+    )
     men_p.set_defaults(resample=True)
 
     args = parser.parse_args()
@@ -488,6 +470,7 @@ if __name__ == "__main__":
             crop=args.crop,
             margin=args.margin,
             resample=args.resample,
+            max_patients=args.max_patients,
         )
 
     elif args.challenge == "men_rt":
@@ -502,4 +485,5 @@ if __name__ == "__main__":
             crop=args.crop,
             margin=args.margin,
             resample=args.resample,
+            max_patients=args.max_patients,
         )
