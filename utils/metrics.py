@@ -66,3 +66,118 @@ def dice_score_tf(y_true, y_pred, smooth=1e-6):
     dice = (2. * intersection + smooth) / (tf.reduce_sum(y_true_f) + tf.reduce_sum(y_pred_f) + smooth)
 
     return dice
+
+
+# ---------------------------------------------------------------------------
+# 3-D / windowed Dice helpers (moved from benchmark_nninteractive/3d_test.ipynb)
+# ---------------------------------------------------------------------------
+
+def volumetric_dice(y_true, y_pred, smooth=1e-6):
+    """
+    Dice coefficient over the entire 3-D binary volume.
+
+    Both inputs are binarised (any non-zero value = foreground).
+    Returns 1.0 when both volumes are completely empty (correct prediction).
+
+    Args:
+        y_true : np.ndarray or tensor, shape (D, H, W) or any matching shape.
+        y_pred : np.ndarray or tensor, same shape as y_true.
+        smooth : float — Laplace smoothing to avoid 0/0.
+
+    Returns:
+        float in [0, 1].
+    """
+    y_true = to_numpy(y_true)
+    y_pred = to_numpy(y_pred)
+
+    A = (y_true != 0).astype(np.bool_)
+    B = (y_pred != 0).astype(np.bool_)
+    inter = np.sum(A & B)
+    sumA  = np.sum(A)
+    sumB  = np.sum(B)
+    if sumA == 0 and sumB == 0:
+        return 1.0
+    return float((2.0 * inter + smooth) / (sumA + sumB + smooth))
+
+
+def dice_window_nn(y_true_3d, y_pred_3d, axis, center_idx, window=10, smooth=1e-6):
+    """
+    Mean slice-wise Dice in a ±`window` band around `center_idx` along `axis`.
+
+    Used to measure how well nnInteractive reconstructed the neighbourhood of
+    the interaction prompt slice.
+
+    Args:
+        y_true_3d  : np.ndarray or tensor, shape (D, H, W).
+        y_pred_3d  : np.ndarray or tensor, shape (D, H, W).
+        axis       : int — the axis along which the prompt was given (0, 1, or 2).
+        center_idx : int — the prompt slice index.
+        window     : int — half-width of the evaluation band.
+        smooth     : float — Laplace smoothing.
+
+    Returns:
+        float — mean Dice over slices in [center_idx-window, center_idx+window].
+    """
+    y_true_3d = tf.cast(to_numpy(y_true_3d), tf.float32)
+    y_pred_3d = tf.cast(to_numpy(y_pred_3d), tf.float32)
+
+    # Move the chosen axis to the front so slicing is uniform
+    perm = [axis] + [i for i in range(3) if i != axis]
+    y_true_3d = tf.transpose(y_true_3d, perm=perm)
+    y_pred_3d = tf.transpose(y_pred_3d, perm=perm)
+
+    num_slices = tf.shape(y_true_3d)[0]
+    start = tf.maximum(center_idx - window, 0)
+    end   = tf.minimum(center_idx + window + 1, num_slices)
+
+    y_true_win = y_true_3d[start:end]
+    y_pred_win = y_pred_3d[start:end]
+
+    n = tf.shape(y_true_win)[0]
+    dice_scores = tf.map_fn(
+        lambda i: dice_score_tf(y_true_win[i], y_pred_win[i], smooth),
+        tf.range(n),
+        dtype=tf.float32,
+    )
+    return float(tf.reduce_mean(dice_scores).numpy())
+
+
+def dice_window_prompt(y_true_3d, y_pred_3d, forward_idxs, window=10, smooth=1e-6):
+    """
+    Mean slice-wise Dice in a ±`window` band centred just before the forward
+    indices start (i.e. around the last backward-propagation slice).
+
+    Used to evaluate Prompt-UNet quality near the handover point from backward
+    to forward propagation.
+
+    Args:
+        y_true_3d   : np.ndarray or tensor, shape (slices, H, W).  Arranged in
+                      evaluation order (backward slices reversed + prompt + forward).
+        y_pred_3d   : np.ndarray or tensor, same shape.
+        forward_idxs: list — the forward slice indices returned by VolumeInference.
+                      Only its *length* matters here (used to compute the centre).
+        window      : int — half-width of the evaluation band.
+        smooth      : float — Laplace smoothing.
+
+    Returns:
+        float — mean Dice over slices in the window.
+    """
+    y_true_3d = tf.cast(to_numpy(y_true_3d), tf.float32)
+    y_pred_3d = tf.cast(to_numpy(y_pred_3d), tf.float32)
+
+    num_slices = tf.shape(y_true_3d)[0]
+    center_idx = (num_slices - len(forward_idxs)) - 1
+
+    start = tf.maximum(center_idx - window, 0)
+    end   = tf.minimum(center_idx + window + 1, num_slices)
+
+    y_true_win = y_true_3d[start:end]
+    y_pred_win = y_pred_3d[start:end]
+
+    n = tf.shape(y_true_win)[0]
+    dice_scores = tf.map_fn(
+        lambda i: dice_score_tf(y_true_win[i], y_pred_win[i], smooth),
+        tf.range(n),
+        dtype=tf.float32,
+    )
+    return float(tf.reduce_mean(dice_scores).numpy())
