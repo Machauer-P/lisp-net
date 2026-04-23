@@ -663,8 +663,22 @@ class DataGenerator:
         print(f'It took {time.time() - start:.0f} seconds')
         return x_new, y_new, prompt, offset_list, m_new
 
+    @staticmethod
+    def _make_object_array(lst):
+        """Safely create a 1-D object array from a list of variable-shape arrays.
+
+        ``np.array(lst, dtype=object)`` can raise a broadcast error when all
+        arrays share one common dimension (e.g. all (222, ?, 1)) because NumPy
+        infers a higher-dimensional layout instead of a flat object array.
+        Pre-allocating and assigning element-by-element is always safe.
+        """
+        arr = np.empty(len(lst), dtype=object)
+        for i, a in enumerate(lst):
+            arr[i] = a
+        return arr
+
     def _to_numpy_arrays(self, x_lst, y_lst, p_lst, m_lst):
-        """Stack lists of arrays. If shapes vary natively, creates object arrays naturally."""
+        """Stack lists of arrays. If shapes vary (native mode), creates object arrays."""
         try:
             return (
                 np.stack(x_lst).astype(np.float32),
@@ -674,9 +688,9 @@ class DataGenerator:
             )
         except ValueError:
             return (
-                np.array(x_lst, dtype=object),
-                np.array(y_lst, dtype=object),
-                np.array(p_lst, dtype=object),
+                self._make_object_array(x_lst),
+                self._make_object_array(y_lst),
+                self._make_object_array(p_lst),
                 np.array(m_lst, dtype=np.float32),
             )
 
@@ -935,7 +949,7 @@ class DataGenerator:
         try:
             x_u_np = np.stack(xu_new).astype(np.float32)
         except ValueError:
-            x_u_np = np.array(xu_new, dtype=object)
+            x_u_np = self._make_object_array(xu_new)
         
         if return_task:
             return x_np, y_np, p_np, x_u_np, m_np, offset_list, task
