@@ -2,6 +2,15 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies.
 
+## [v315] - Addition of BraTS Datasets
+*Implementation: `prompt_unet_313.py`, `p_unet_315.ipynb`*
+
+**Data Additions**
+- **BraTS Inclusion:** Added subsets of BraTS datasets to the training pipeline to increase anatomical variety and introduce brain tumor scenarios.
+  - Extracted 20 random patients across the 4 modalities of `BraTS_GLI` (`t1c`, `t1n`, `t2f`, `t2w`) into `brats_gli_training.npz`.
+  - Extracted 6 random patients from `BraTS_MEN_RT` into `brats_men_rt_train.npz`.
+- **Identical to v313 otherwise:** The model architecture (Float32 + SE Attention) and everything else remains strictly unchanged from v313.
+
 ## [v320] - Control Experiment: v21 Architecture + Modern Data Pipeline
 *Implementation: `prompt_unet_320.py`, `p_unet_320.ipynb`*
 
@@ -26,13 +35,6 @@ This document tracks the evolution of the Prompt U-Net segmentation model, from 
 - v320 vs v310–313: isolates the effect of **architecture + augmentation** (data fixed).
 
 ---
-
-<!-- ## [v315] - Old Filter Schedule Ablation Variant
-*Implementation: `prompt_unet_315.py`, `p_unet_315.ipynb`*
-
-**Architecture**
-- **Old Filter Schedule:** Restored the original `[32, 64, 128, 256, 512]` filter schedule to measure the exact impact of the wider representation used in the v310-v312 generation.
-- **Identical to v312 otherwise:** Uses pure `Conv2D` across all stages, maintains SE attention removal, and relies on pure float32 training. -->
 
 ## [v314] - Depthwise Separable Convolutions Ablation Variant
 *Implementation: `prompt_unet_314.py`, `p_unet_314.ipynb`*
