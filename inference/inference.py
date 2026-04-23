@@ -16,7 +16,7 @@ from inference.tiling import TiledInference
 
 class PromptUNetPredictor:
     """
-    Fast inference wrapper for Prompt-UNet.
+    Fast inference wrapper for Prompt U-Net.
 
     Accepts images and prompts at **any** spatial resolution — no
     pre-resizing required.

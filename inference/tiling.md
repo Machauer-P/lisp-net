@@ -34,7 +34,7 @@ Rewired `VolumeInference` to produce native-resolution predictions:
 
 ---
 
-## 4. 2D Inference Wrapper (`inference/p_unet_inference.py`)
+## 4. 2D Inference Wrapper (`inference/inference.py`)
 
 Added tiling support while keeping the 2D evaluation pipeline **100 % unchanged**.
 
