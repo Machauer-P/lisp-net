@@ -1,6 +1,6 @@
 """
-evaluation/benchmark_nninteractive/tune_ssf.py
-==============================================
+inference/tune_ssf.py
+======================
 Unified SSF hyperparameter tuning script for Prompt-UNet.
 
 This script compares three Self-Supervised Feedback (SSF) strategies across
@@ -26,7 +26,7 @@ Strategies tested
   ConfidenceDrop   — fires when mean foreground sigmoid drops by X% from start.
 
 Usage (CLI):
-    python evaluation/benchmark_nninteractive/tune_ssf.py
+    python inference/tune_ssf.py
 """
 
 import sys
@@ -41,7 +41,7 @@ import pandas as pd
 # Project root injection
 # ---------------------------------------------------------------------------
 _HERE         = Path(__file__).resolve().parent
-_PROJECT_ROOT = _HERE.parent.parent
+_PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -76,6 +76,7 @@ STRATEGIES_TO_TEST = [
     ("MaskDice(0.60)",         MaskDiceStrategy(0.60)),
     ("MaskDice(0.70)",         MaskDiceStrategy(0.70)),
     # --- ConfidenceDrop ---
+    ("Confidence(0.05)",       ConfidenceDropStrategy(0.05)),
     ("Confidence(0.10)",       ConfidenceDropStrategy(0.10)),
     ("Confidence(0.20)",       ConfidenceDropStrategy(0.20)),
     ("Confidence(0.30)",       ConfidenceDropStrategy(0.30)),
@@ -98,7 +99,7 @@ def tune_ssf():
     model_path   = "training/p_unet_313.keras"
     runs_per_vol = 10
     subset_ratio = 0.10
-    batch_size   = 3     # Increase for large GPUs (e.g. 12 or 16)
+    batch_size   = 3     # Increase for large GPUs (e.g. 8 or 12)
     buffer_size  = 6     # Number of recent predictions to aggregate for SSF refresh
 
     print(f"\n{'='*60}")
@@ -115,7 +116,7 @@ def tune_ssf():
     p_unet = VolumeInference(
         model_path       = str(model_full_path),
         modality         = None,    # we pass it per-volume in run()
-        output_threshold = 0.45,
+        output_threshold = 0.5,
         ssf_strategy     = None,    # start disabled; overridden in loop
         buffer_size      = buffer_size,
         batch_size       = batch_size,

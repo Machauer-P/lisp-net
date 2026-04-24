@@ -34,8 +34,8 @@ Usage
 -----
     from inference.ssf import SSFController, RelativeSSIMStrategy
 
-    ctrl = SSFController(strategy=RelativeSSIMStrategy(threshold=0.25),
-                         buffer_size=6)
+    ctrl = SSFController(strategy=RelativeSSIMStrategy(threshold=0.40),
+                         buffer_size=4)
 
     # At the start of each propagation direction:
     ctrl.reset(initial_mask_128)   # (1, 128, 128, 1) binary tensor
@@ -125,12 +125,16 @@ class RelativeSSIMStrategy(BaseSSFStrategy):
     Parameters
     ----------
     threshold : float
-        Relative SSIM drop fraction that triggers SSF.  Default 0.25.
-        A value of 0.25 means "fire when SSIM has degraded by 25% of its
+        Relative SSIM drop fraction that triggers SSF.  Default 0.40.
+        A value of 0.40 means "fire when SSIM has degraded by 40% of its
         initial value".
+        
+        NOTE: This default parameter was found via an evaluation on the training data.
+        For other datasets, other settings might work better, and there is always
+        the option to just turn SSF off.
     """
 
-    def __init__(self, threshold: float = 0.25):
+    def __init__(self, threshold: float = 0.40):
         self.threshold      = threshold
         self._start_ssim: Optional[float] = None
 
@@ -320,13 +324,17 @@ class SSFController:
     strategy : BaseSSFStrategy or None
         Which SSF strategy to use.  ``None`` disables SSF entirely.
     buffer_size : int
-        Rolling buffer depth for the buffer-minimum prompt refresh.  Default 6.
+        Rolling buffer depth for the buffer-minimum prompt refresh.  Default 4.
+        
+        NOTE: This default parameter was found via an evaluation on the training data.
+        For other datasets, other settings might work better, and there is always
+        the option to just turn SSF off.
     """
 
     def __init__(
         self,
         strategy: Optional[BaseSSFStrategy] = None,
-        buffer_size: int = 6,
+        buffer_size: int = 4,
     ):
         self.strategy = strategy
         self._buffer  = deque(maxlen=buffer_size)
