@@ -56,6 +56,19 @@ class PromptUNetPredictor:
        accuracy. Use native input (mode 2) instead and let the tiler
        handle arbitrary sizes.
 
+    .. danger:: **Normalization Requirement**
+
+       This class does **NOT** normalize raw medical data (e.g. it does NOT
+       clip Hounsfield units or apply MRI percentiles). It assumes inputs are
+       **already precisely normalized** to the range expected by the loaded
+       Prompt-UNet model (usually a z-score clipped to ``[-5, 5]`` for 
+       'universal' models >= v292, or ``[0, 1]`` for legacy models). 
+       
+       Passing raw intensities directly into ``predict()`` will silently
+       yield garbage predictions. If you are predicting on raw 3D medical
+       volumes, use ``inference_volume.VolumeInference`` instead, which 
+       handles normalization automatically via the ``modality`` parameter.
+
     Parameters
     ----------
     model_path_or_obj : str, Path, or tf.keras.Model

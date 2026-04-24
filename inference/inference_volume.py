@@ -248,8 +248,8 @@ class VolumeInference:
     def __init__(
         self,
         model_path: str | Path,
+        modality: Optional[str],
         normalization: str = "auto",
-        modality: str = "MRI",
         output_threshold: float = 0.45,
         ssf_strategy: Optional[BaseSSFStrategy] = None,
         batch_size: int = 3,
@@ -264,7 +264,7 @@ class VolumeInference:
 
         print(
             f"[VolumeInference] Loading '{self.model_path.name}' "
-            f"(norm='{self.normalization_mode}', modality='{modality}', "
+            f"(norm='{self.normalization_mode}', modality_fallback={self.modality}, "
             f"batch_size={self.batch_size})"
         )
         self.model = tf.keras.models.load_model(str(self.model_path))

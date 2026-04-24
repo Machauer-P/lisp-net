@@ -112,7 +112,7 @@ def tune_ssf():
     # Load model once; swap strategy via set_ssf_strategy() between runs
     p_unet = VolumeInference(
         model_path       = str(model_full_path),
-        modality         = "MRI",   # replaced per-volume dynamically
+        modality         = None,    # we pass it per-volume in run()
         output_threshold = 0.45,
         ssf_strategy     = None,    # start disabled; overridden in loop
     )
