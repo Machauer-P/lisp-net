@@ -82,12 +82,13 @@ pip install -r requirements_eval.txt
 
 ## 📂 Project Structure
 
-- **`data/`**: Core dataset processing scripts and data loaders (e.g., `DataGenerator.py`, `DataLoader_npz.py`). Contains Jupyter notebooks to explore data augmentations and outputs.
-- **`models/`**: Neural network architecture and related definitions (`prompt_unet.py`) and custom optimizers.
-- **`training/`**: The main hub for training Prompt U-Net, containing Jupyter Notebooks (e.g., `p_unet_*.ipynb`) and storage for `.keras` models.
-- **`utils/`**: Reusable modules for preprocessing, augmentation, measuring performance (metrics), and visualization.
-- **`evaluation/`**: Scripts and data configurations for benchmarking tests against baselines like nnInteractive and UniverSeg.
-- **`deployment/`**: Web-based deployment tools, including the interactive TensorFlow.js demonstration and model conversion scripts (`keras_to_tf_js.py`).
+- **`data/`**: Core dataset processing scripts and data loaders (e.g., `DataGenerator.py`, `DataLoader_npz.py`). Contains Jupyter notebooks to explore data augmentations, visualize datasets, and scripts to process raw medical data into efficient `.npz` records. Use this folder to manage and prepare all training and evaluation data.
+- **`inference/`**: Modules for running predictions with trained models. Includes the core inference classes (e.g., `inference_volume.py`), logic for adaptive spatial tiling (`tiling.py`), and the Self-Supervised Feedback mechanism (`ssf.py`) that intelligently enforces volumetric consistency across 3D image slices without human intervention.
+- **`training/`**: The main hub for defining and training Prompt U-Net. Contains all neural network architecture variants (`prompt_unet_*.py`), custom optimizers, logging configurations, and Jupyter Notebooks (e.g., `p_unet_*.ipynb`) used to run historical and active training experiments. Trained `.keras` model weights are built and stored here.
+- **`utils/`**: Reusable helper modules that handle common operations across the codebase. Includes utilities for image processing, specialized data augmentations, visualization routines, and measuring performance metrics.
+- **`evaluation/`**: Scripts, pipeline tools, and Jupyter notebooks explicitly designed for robust benchmarking. Use this to analyze the performance of Prompt U-Net against competing baselines (such as nnInteractive and UniverSeg) and generate comparative statistics across anatomical tasks.
+- **`deployment/`**: Web-based deployment tools. Contains scripts (e.g., `keras_to_tf_js.py`) to convert trained `.keras` format models into TensorFlow.js graph models, alongside basic HTML/JS/CSS assets for an interactive browser-based testing demonstration.
+- **`docs/`**: Relevant documents such as architectural diagrams, preprints, and research to provide a theoretical understanding of the Prompt U-Net model and its underlying methodology.
 
 ---
 
@@ -99,11 +100,11 @@ To train a brand new model or continue training, navigate to the `training/` dir
 ### 2. Evaluating Models
 Once you have trained your Prompt U-Net, you can assess its performance. Ensure you have installed the dependencies via `requirements_eval.txt`. Check the folders inside `evaluation/` for specific run instructions depending on the chosen benchmark.
 
-### 3. Deploying to the Web
-To demonstrate the model's capabilities:
-1. Export your `.keras` model using the `deployment/keras_to_tf_js.py` converter.
-2. The UI code inside `deployment/` (HTML, JS, CSS) provides an interactive canvas to draw prompts and see real-time inference using TensorFlow JS.
-3. Simply serve the `deployment/` folder with an HTTP server, e.g., `python -m http.server 8000`, and navigate to `localhost:8000` in your web browser.
+### 3. Model Inference, Exporting & Deployment
+Once trained, the `.keras` model can be utilized in several ways:
+- **Python Inference:** Use the modules inside the `inference/` folder (such as `inference_volume.py`) to run predictions and apply the Self-Supervised Feedback (SSF) mechanism directly from Python. This is the primary method for predicting on 3D medical volumes.
+- **Exporting for the Web:** You can export your trained `.keras` model to a TensorFlow.js format using the `deployment/keras_to_tf_js.py` converter tool.
+- **Web Deployment (Demo Only):** The `deployment/` folder includes UI code (HTML, JS, CSS) to serve an interactive canvas using the exported model via a local HTTP server (`python -m http.server 8000`). *Note: This local deployment is strictly for testing the TensorFlow.js integration and basic drawing mechanics. It is not useful for real-world application or general usage, as it lacks a proper 3D medical image viewer and interactive context update mechanism.*
 
 ---
 
