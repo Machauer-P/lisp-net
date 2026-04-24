@@ -3,8 +3,8 @@ tensorflow==2.21.0
 tensorflowjs==4.22.0
 numpy==2.2.6
 scipy==1.15.3
-pandas==2.2.3
-tensorflow_probability==0.25.0
+pandas==2.3.3
+tensorflow-probability==0.25.0
 nibabel==5.4.2
 simpleitk==2.5.3
 
