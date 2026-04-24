@@ -68,6 +68,13 @@ from inference.inference_volume import (
     VolumeInference,
     InteractiveFeedbackLoop,
     generate_initial_prompt,
+    RunResult,
+)
+from inference.ssf import (
+    BaseSSFStrategy,
+    RelativeSSIMStrategy,
+    MaskDiceStrategy,
+    ConfidenceDropStrategy,
 )
 from evaluation.benchmark_nninteractive.nninteractive_inference import NNInteractiveInference
 
@@ -248,7 +255,7 @@ def run_benchmark(
     mode: str = "ifl",
     modality: Optional[str] = None,
     output_threshold: float = 0.45,
-    sim_diff_threshold: float = 0.6,
+    ssf_strategy: Optional[BaseSSFStrategy] = None,
     gt_dice_threshold: float = 0.65,
     window: int = 10,
     min_prompt_pixels: int = 50,
@@ -270,10 +277,11 @@ def run_benchmark(
     runs_per_vol    : int — number of random prompts per volume.
     mode            : 'ssf' or 'ifl'
                       'ssf' — Self-Supervised Feedback only (no GT needed for driving predictions)
-                      'ifl' — SSF + Interactive Feedback Loop (GT-corrected)
+                      'ifl' — Interactive Feedback Loop (GT-corrected, SSF disabled)
     modality        : 'CT' or 'MRI' — used only when normalization auto-detects >= v292.
     output_threshold: float — sigmoid threshold for Prompt-UNet outputs.
-    sim_diff_threshold: float — SSIM drop to trigger SSF refresh (0 = disabled).
+    ssf_strategy    : BaseSSFStrategy or None — SSF trigger strategy.  Only used when
+                      mode='ssf'.  None disables SSF entirely.
     gt_dice_threshold : float — Dice threshold for IFL GT substitution.
     window          : int — half-width for windowed Dice evaluation.
     min_prompt_pixels: int — minimum foreground pixels for prompt eligibility.
@@ -290,7 +298,7 @@ def run_benchmark(
     mode_lower = mode.lower()
     use_ifl = "ifl" in mode_lower
     use_ssf = "ssf" in mode_lower
-    effective_sim_diff = sim_diff_threshold if use_ssf else 0.0
+    active_ssf = ssf_strategy if use_ssf else None
 
     # --- Load Prompt-UNet ---
     if verbose:
@@ -299,18 +307,18 @@ def run_benchmark(
 
     if use_ifl:
         p_unet = InteractiveFeedbackLoop(
-            model_path         = p_unet_model,
-            modality           = modality,
-            output_threshold   = output_threshold,
-            sim_diff_threshold = effective_sim_diff,
-            gt_dice_threshold  = gt_dice_threshold,
+            model_path        = p_unet_model,
+            modality          = modality,
+            output_threshold  = output_threshold,
+            ssf_strategy      = None,   # IFL runs without SSF
+            gt_dice_threshold = gt_dice_threshold,
         )
     else:
         p_unet = VolumeInference(
-            model_path         = p_unet_model,
-            modality           = modality,
-            output_threshold   = output_threshold,
-            sim_diff_threshold = effective_sim_diff,
+            model_path       = p_unet_model,
+            modality         = modality,
+            output_threshold = output_threshold,
+            ssf_strategy     = active_ssf,
         )
 
     # --- Load nnInteractive ---
@@ -574,12 +582,16 @@ if __name__ == "__main__":
         "--nn_model_dir", default=None,
         help="Path to nnInteractive weights directory.  If omitted, auto-downloaded.",
     )
-    parser.add_argument("--runs_per_vol",       type=int,   default=5)
-    parser.add_argument("--mode",               default="ifl", choices=["ssf", "ifl"])
-    parser.add_argument("--modality",           default=None, choices=["CT", "MRI"], help="Fallback modality if not in .npz")
-    parser.add_argument("--output_threshold",   type=float, default=0.45)
-    parser.add_argument("--sim_diff_threshold", type=float, default=0.6)
-    parser.add_argument("--gt_dice_threshold",  type=float, default=0.65)
+    parser.add_argument("--runs_per_vol",      type=int,   default=5)
+    parser.add_argument("--mode",              default="ifl", choices=["ssf", "ifl"])
+    parser.add_argument("--modality",          default=None, choices=["CT", "MRI"], help="Fallback modality if not in .npz")
+    parser.add_argument("--output_threshold",  type=float, default=0.45)
+    parser.add_argument("--ssf_strategy",      default="none",
+                        choices=["none", "relative_ssim", "mask_dice", "confidence"],
+                        help="SSF trigger strategy (only used with mode=ssf).")
+    parser.add_argument("--ssf_threshold",     type=float, default=0.25,
+                        help="Threshold parameter for the chosen SSF strategy.")
+    parser.add_argument("--gt_dice_threshold", type=float, default=0.65)
     parser.add_argument("--window",             type=int,   default=10)
     parser.add_argument("--min_prompt_pixels",  type=int,   default=50)
     parser.add_argument(
@@ -591,18 +603,27 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Build SSF strategy from CLI args
+    _ssf_map = {
+        "none"         : None,
+        "relative_ssim": RelativeSSIMStrategy(args.ssf_threshold),
+        "mask_dice"    : MaskDiceStrategy(args.ssf_threshold),
+        "confidence"   : ConfidenceDropStrategy(args.ssf_threshold),
+    }
+    chosen_ssf = _ssf_map[args.ssf_strategy]
+
     run_benchmark(
-        npz_paths           = args.npz_paths,
-        p_unet_model        = args.p_unet_model,
-        nn_model_dir        = args.nn_model_dir,
-        runs_per_vol        = args.runs_per_vol,
-        mode                = args.mode,
-        modality            = args.modality,
-        output_threshold    = args.output_threshold,
-        sim_diff_threshold  = args.sim_diff_threshold,
-        gt_dice_threshold   = args.gt_dice_threshold,
-        window              = args.window,
-        min_prompt_pixels   = args.min_prompt_pixels,
-        output_dir          = args.output_dir,
-        nn_device           = args.nn_device,
+        npz_paths         = args.npz_paths,
+        p_unet_model      = args.p_unet_model,
+        nn_model_dir      = args.nn_model_dir,
+        runs_per_vol      = args.runs_per_vol,
+        mode              = args.mode,
+        modality          = args.modality,
+        output_threshold  = args.output_threshold,
+        ssf_strategy      = chosen_ssf,
+        gt_dice_threshold = args.gt_dice_threshold,
+        window            = args.window,
+        min_prompt_pixels = args.min_prompt_pixels,
+        output_dir        = args.output_dir,
+        nn_device         = args.nn_device,
     )

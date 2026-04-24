@@ -55,14 +55,14 @@ sequential behaviour (rollback ≤ batch_size − 1 slices are re-predicted).
 from __future__ import annotations
 
 import random
-from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.image import ssim as tf_ssim
+
+from inference.ssf import SSFController, BaseSSFStrategy, RelativeSSIMStrategy
 
 # ---------------------------------------------------------------------------
 # Project-root path injection
@@ -122,33 +122,13 @@ class RunResult:
     # IFL-only — None / empty in plain VolumeInference
     num_user_interacts: Optional[int] = None
     user_interacts_idx: List[int] = field(default_factory=list)
+    # Per-slice mean sigmoid confidence (foreground region); always populated
+    confidence_per_slice: Optional[List[float]] = None
 
 
 # ---------------------------------------------------------------------------
-# Utility: SSIM (normalization-agnostic)
+# Utility: SSIM helper lives in inference.ssf
 # ---------------------------------------------------------------------------
-
-def _compare_ssim(tensor_1, tensor_2) -> float:
-    """
-    Stable SSIM trigger signal for SSF.
-
-    Both inputs are independently min-max scaled to [0, 1] before comparison,
-    so the result is always in [−1, 1] regardless of whether the underlying
-    normalization is legacy ([0, 1]) or universal ([−5, 5]).  This avoids
-    the tf.image.ssim max_val issue with z-score normalized images.
-
-    This rescaling is only for the SSF trigger — it does not affect predictions.
-    """
-    a = np.asarray(tensor_1, dtype=np.float32)
-    b = np.asarray(tensor_2, dtype=np.float32)
-    a = (a - a.min()) / (a.max() - a.min() + 1e-8)
-    b = (b - b.min()) / (b.max() - b.min() + 1e-8)
-    if a.ndim == 2:
-        a = a[..., np.newaxis]
-    if b.ndim == 2:
-        b = b[..., np.newaxis]
-    score = tf_ssim(tf.constant(a)[tf.newaxis], tf.constant(b)[tf.newaxis], max_val=1.0)
-    return float(tf.squeeze(score).numpy())
 
 
 # ---------------------------------------------------------------------------
@@ -248,11 +228,12 @@ class VolumeInference:
         'CT' or 'MRI'.  Used only when normalization resolves to 'universal'.
     output_threshold : float
         Sigmoid threshold applied to model output to produce binary masks.
-    sim_diff_threshold : float
-        SSIM drop from the current reference that triggers an SSF prompt
-        refresh.  Set to 0 to disable SSF entirely.
-    buffer_size : int
-        Number of recent predictions kept in the SSF rolling buffer.
+    ssf_strategy : BaseSSFStrategy or None
+        Pluggable SSF trigger strategy.  Pass one of:
+            ``RelativeSSIMStrategy(threshold)``  — relative SSIM drop (recommended)
+            ``MaskDiceStrategy(threshold)``       — consecutive mask Dice collapse
+            ``ConfidenceDropStrategy(drop_frac)`` — model confidence drop
+        Set to ``None`` (default) to disable SSF entirely.
     batch_size : int
         Number of slices predicted per GPU forward pass.  Slices within a
         batch all use the same prompt; if SSF or IFL fires mid-batch, slices
@@ -270,8 +251,7 @@ class VolumeInference:
         normalization: str = "auto",
         modality: str = "MRI",
         output_threshold: float = 0.45,
-        sim_diff_threshold: float = 0.2,
-        buffer_size: int = 6,
+        ssf_strategy: Optional[BaseSSFStrategy] = None,
         batch_size: int = 3,
         tile_trigger_fraction: float = 0.75,
     ):
@@ -279,9 +259,8 @@ class VolumeInference:
         self.normalization_mode = _resolve_normalization(model_path, normalization)
         self.modality           = modality
         self.output_threshold   = output_threshold
-        self.sim_diff_threshold = sim_diff_threshold
-        self.buffer_size        = buffer_size
         self.batch_size         = max(1, batch_size)
+        self._ssf               = SSFController(ssf_strategy, buffer_size=6)
 
         print(
             f"[VolumeInference] Loading '{self.model_path.name}' "
@@ -311,6 +290,21 @@ class VolumeInference:
             tile_size=128,
             tile_trigger_fraction=tile_trigger_fraction,
         )
+
+    def set_ssf_strategy(self, strategy: Optional[BaseSSFStrategy]) -> None:
+        """
+        Swap the SSF strategy on a live model without reloading weights.
+
+        Useful in tuning loops where you want to test multiple strategies on
+        the same loaded model.  The new strategy takes effect on the next
+        call to :meth:`run`.
+
+        Parameters
+        ----------
+        strategy : BaseSSFStrategy or None
+            New strategy to use.  ``None`` disables SSF.
+        """
+        self._ssf.strategy = strategy
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -469,15 +463,12 @@ class VolumeInference:
 
         # ---------------------------------------------------------------
         # Slice loop with SSF / IFL rollback
-        # Tiling runs inside _predict_tiled, so batch_size here controls
-        # how many slices we pre-fetch for SSF/IFL look-ahead, not GPU batching
-        # (GPU batching across tiles is handled inside TiledInference.run).
         # ---------------------------------------------------------------
-        results       : List[np.ndarray] = []
-        ground_truths : List[np.ndarray] = []
-        buffer        = deque(maxlen=self.buffer_size)  # 128×128 preds for SSF
-        buffer.append(prompt_mask_128)
-        start_ssim    = None
+        results                  : List[np.ndarray] = []
+        ground_truths            : List[np.ndarray] = []
+        confidence_per_slice_lst : List[float]       = []
+
+        self._ssf.reset(prompt_mask_128)
 
         idx_queue: List[int] = list(backward_indices) + list(forward_indices)
 
@@ -535,8 +526,10 @@ class VolumeInference:
                 tf.constant(prompt_mega, dtype=tf.float32),
             ).numpy()   # (b*t, 128, 128, 1)
 
-            # Blend per-slice predictions from the mega-batch
-            batch_preds: List[np.ndarray] = []
+            # Blend per-slice predictions from the mega-batch; also keep raw
+            # sigmoid probabilities for ConfidenceDropStrategy.
+            batch_preds     : List[np.ndarray] = []  # binary
+            batch_probs_raw : List[np.ndarray] = []  # float32 sigmoid [0,1]
             for k in range(b):
                 prob_slice = pred_mega[k * n_tiles:(k + 1) * n_tiles]  # (n_tiles,128,128,1)
                 accum_prob   = np.zeros((H_slice, W_slice), dtype=np.float32)
@@ -553,6 +546,7 @@ class VolumeInference:
                 eps = 1e-8
                 prob = np.where(accum_weight > eps,
                                 accum_prob / (accum_weight + eps), 0.0)
+                batch_probs_raw.append(prob)   # raw float32 sigmoid
                 batch_preds.append((prob >= self.output_threshold).astype(np.float32))
 
             # --- Process slice-by-slice for SSF / IFL checks ---
@@ -563,107 +557,101 @@ class VolumeInference:
 
                 # Pre-computed native-resolution prediction from mega-batch
                 pred_native = batch_preds[k]        # (H, W) binary float32
+                prob_raw_k  = batch_probs_raw[k]    # (H, W) float32 sigmoid
 
-                # Keep a 128×128 thumbnail for SSF buffer / SSIM (no quality impact)
-                pred_128 = shaping(
-                    np.expand_dims(pred_native, -1), binary=True
-                )   # (1, 128, 128, 1)
+                # 128×128 thumbnails for SSF checks
+                pred_128     = shaping(np.expand_dims(pred_native, -1), binary=True)  # (1,128,128,1)
+                pred_prob_128 = shaping(np.expand_dims(prob_raw_k, -1))               # (1,128,128,1)
 
                 # GT at 128×128 for IFL Dice check
                 gt_128 = shaping(
                     np.expand_dims(gt_plane_k, -1), binary=True
                 )   # (1, 128, 128, 1)
 
-                # 1. Buffer update for SSF (128×128 thumbnails)
-                buffer.append(pred_128)
-
-                # 2. IFL hook — base class is no-op; IFL subclass may substitute GT
-                # Returns new p (128×128 prompt tensor) and rollback flag
+                # 1. IFL hook — base class is no-op; IFL subclass may substitute GT
                 final_pred_128, p, ifl_rollback = self._maybe_ifl_update(
                     vol_i, prompt_img_128, pred_128, gt_128, p
                 )
 
                 # If IFL fired, update cur_prompt_mask from the accepted GT
                 if ifl_rollback:
-                    cur_prompt_mask = gt_plane_k.copy()   # native-res GT
+                    cur_prompt_mask = gt_plane_k.copy()
                     cur_prompt_img  = img_plane_k.copy()
                     prompt_img_128  = shaping(np.expand_dims(cur_prompt_img, -1))
                 else:
-                    # Accepted prediction becomes the prompt for subsequent slices
                     cur_prompt_mask = pred_native.copy()
+
+                # Track per-slice confidence (mean sigmoid over predicted foreground)
+                fg = pred_native > 0.5
+                confidence_per_slice_lst.append(
+                    float(prob_raw_k[fg].mean()) if fg.any() else 0.0
+                )
 
                 # Store native-resolution results
                 ground_truths.append(gt_plane_k)
                 results.append(pred_native)
 
                 if ifl_rollback:
-                    start_ssim     = None
+                    self._ssf.reset_trigger()  # reset strategy ref without clearing buffer
                     rollback_start = k + 1
                     break
 
-                # 3. SSF: SSIM on 128×128 thumbnails (fast, consistent with original)
-                img_plane_128 = shaping(np.expand_dims(img_plane_k, -1))
-                ssim_k = _compare_ssim(img_plane_128[0, ..., 0], p[0, ..., 0])
-                if start_ssim is None:
-                    start_ssim = ssim_k
+                # 2. SSF check — delegated to SSFController
+                img_plane_128 = shaping(np.expand_dims(img_plane_k, -1))  # (1,128,128,1)
+                ssf_fired, new_mask_128 = self._ssf.update(
+                    slice_idx       = vol_i,
+                    img_plane_128   = img_plane_128[0, ..., 0].numpy(),
+                    pred_binary_128 = pred_128,
+                    pred_prob_128   = pred_prob_128,
+                    prompt_img_128  = p[0, ..., 0].numpy(),
+                )
 
-                ssim_diff = start_ssim - ssim_k
-                if (
-                    self.sim_diff_threshold > 0
-                    and ssim_diff >= self.sim_diff_threshold
-                    and ssim_diff < 1.0
-                ):
-                    # SSF fires: refresh prompt from buffer minimum
-                    p_y = tf.math.sign(
-                        tf.reduce_min(tf.stack(list(buffer), axis=0), axis=0)
-                    )
-                    p               = tf.concat([img_plane_128, p_y], axis=-1)
-                    cur_prompt_mask = np.squeeze(p_y.numpy(), axis=(0, -1))
-                    # Resize thumbnail back to native for next iteration
+                if ssf_fired:
+                    # new_mask_128 is (1,128,128,1) binary TF tensor
+                    p               = tf.concat([img_plane_128, new_mask_128], axis=-1)
                     cur_prompt_mask = shaping(
-                        np.expand_dims(cur_prompt_mask, -1), binary=True,
+                        np.expand_dims(new_mask_128[0, ..., 0].numpy(), -1), binary=True,
                         h=img_plane_k.shape[0], w=img_plane_k.shape[1]
                     )[0, :, :, 0].numpy()
                     cur_prompt_img  = img_plane_k.copy()
-                    start_ssim      = None
-                    buffer.clear()
-                    buffer.append(p_y)
                     rollback_start  = k + 1
                     break
 
             idx_queue = batch_idxs[rollback_start:] + idx_queue[b:]
 
             if backward_indices and backward_indices[-1] in batch_idxs[:rollback_start]:
-                results       = list(reversed(results))
-                ground_truths = list(reversed(ground_truths))
+                results                  = list(reversed(results))
+                ground_truths            = list(reversed(ground_truths))
+                confidence_per_slice_lst = list(reversed(confidence_per_slice_lst))
 
                 # Insert prompt slice itself in the middle
                 results.append(prompt_mask_plane.copy())
                 ground_truths.append(prompt_mask_plane.copy())
+                confidence_per_slice_lst.append(0.0)  # prompt slice has no model confidence
 
                 # Reset for forward pass
                 p               = p_initial
                 cur_prompt_img  = prompt_img_plane
                 cur_prompt_mask = prompt_mask_plane
-                buffer.clear()
-                buffer.append(prompt_mask_128)
-                start_ssim = None
+                self._ssf.reset(prompt_mask_128)
 
         if not backward_indices:
             results.append(prompt_mask_plane.copy())
             ground_truths.append(prompt_mask_plane.copy())
+            confidence_per_slice_lst.append(0.0)
 
         results_arr = np.stack(results, axis=0)        # (S, H, W)
         gt_arr      = np.stack(ground_truths, axis=0)  # (S, H, W)
 
         return RunResult(
-            results_3d         = results_arr,
-            gt_3d              = gt_arr,
-            backward_indices   = backward_indices,
-            forward_indices    = forward_indices,
-            prompt_axis        = prompt_axis,
-            prompt_idx         = prompt_idx,
-            normalization_mode = self.normalization_mode,
+            results_3d           = results_arr,
+            gt_3d                = gt_arr,
+            backward_indices     = backward_indices,
+            forward_indices      = forward_indices,
+            prompt_axis          = prompt_axis,
+            prompt_idx           = prompt_idx,
+            normalization_mode   = self.normalization_mode,
+            confidence_per_slice = confidence_per_slice_lst,
         )
 
 
