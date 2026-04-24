@@ -4,6 +4,9 @@ __pycache__/
 # Test Data
 data/test_data/*/
 
+# Research
+research/
+
 # Augm test results
 utils/augmentation_results/
 
