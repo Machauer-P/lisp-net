@@ -228,12 +228,9 @@ class VolumeInference:
         'CT' or 'MRI'.  Used only when normalization resolves to 'universal'.
     output_threshold : float
         Sigmoid threshold applied to model output to produce binary masks.
-    ssf_strategy : BaseSSFStrategy or None
-        Pluggable SSF trigger strategy.  Pass one of:
-            ``RelativeSSIMStrategy(threshold)``  — relative SSIM drop (recommended)
-            ``MaskDiceStrategy(threshold)``       — consecutive mask Dice collapse
-            ``ConfidenceDropStrategy(drop_frac)`` — model confidence drop
-        Set to ``None`` (default) to disable SSF entirely.
+    buffer_size : int
+        Number of recent predictions kept in the SSF rolling buffer.
+        Default 6.
     batch_size : int
         Number of slices predicted per GPU forward pass.  Slices within a
         batch all use the same prompt; if SSF or IFL fires mid-batch, slices
@@ -252,6 +249,7 @@ class VolumeInference:
         normalization: str = "auto",
         output_threshold: float = 0.45,
         ssf_strategy: Optional[BaseSSFStrategy] = None,
+        buffer_size: int = 6,
         batch_size: int = 3,
         tile_trigger_fraction: float = 0.75,
     ):
@@ -259,8 +257,9 @@ class VolumeInference:
         self.normalization_mode = _resolve_normalization(model_path, normalization)
         self.modality           = modality
         self.output_threshold   = output_threshold
+        self.buffer_size        = buffer_size
         self.batch_size         = max(1, batch_size)
-        self._ssf               = SSFController(ssf_strategy, buffer_size=6)
+        self._ssf               = SSFController(ssf_strategy, buffer_size=buffer_size)
 
         print(
             f"[VolumeInference] Loading '{self.model_path.name}' "

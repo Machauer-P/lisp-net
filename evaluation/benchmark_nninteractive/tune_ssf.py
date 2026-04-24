@@ -98,6 +98,8 @@ def tune_ssf():
     model_path   = "training/p_unet_313.keras"
     runs_per_vol = 10
     subset_ratio = 0.10
+    batch_size   = 3     # Increase for large GPUs (e.g. 12 or 16)
+    buffer_size  = 6     # Number of recent predictions to aggregate for SSF refresh
 
     print(f"\n{'='*60}")
     print(f" SSF STRATEGY COMPARISON: {model_path}")
@@ -115,6 +117,8 @@ def tune_ssf():
         modality         = None,    # we pass it per-volume in run()
         output_threshold = 0.45,
         ssf_strategy     = None,    # start disabled; overridden in loop
+        buffer_size      = buffer_size,
+        batch_size       = batch_size,
     )
 
     all_records = []

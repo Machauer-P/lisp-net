@@ -256,6 +256,7 @@ def run_benchmark(
     modality: Optional[str] = None,
     output_threshold: float = 0.45,
     ssf_strategy: Optional[BaseSSFStrategy] = None,
+    buffer_size: int = 6,
     gt_dice_threshold: float = 0.65,
     window: int = 10,
     min_prompt_pixels: int = 50,
@@ -282,6 +283,7 @@ def run_benchmark(
     output_threshold: float — sigmoid threshold for Prompt-UNet outputs.
     ssf_strategy    : BaseSSFStrategy or None — SSF trigger strategy.  Only used when
                       mode='ssf'.  None disables SSF entirely.
+    buffer_size     : int — number of recent predictions kept in the SSF buffer.
     gt_dice_threshold : float — Dice threshold for IFL GT substitution.
     window          : int — half-width for windowed Dice evaluation.
     min_prompt_pixels: int — minimum foreground pixels for prompt eligibility.
@@ -311,6 +313,7 @@ def run_benchmark(
             modality          = modality,
             output_threshold  = output_threshold,
             ssf_strategy      = None,   # IFL runs without SSF
+            buffer_size       = buffer_size,
             gt_dice_threshold = gt_dice_threshold,
         )
     else:
@@ -319,6 +322,7 @@ def run_benchmark(
             modality         = modality,
             output_threshold = output_threshold,
             ssf_strategy     = active_ssf,
+            buffer_size      = buffer_size,
         )
 
     # --- Load nnInteractive ---
@@ -591,6 +595,8 @@ if __name__ == "__main__":
                         help="SSF trigger strategy (only used with mode=ssf).")
     parser.add_argument("--ssf_threshold",     type=float, default=0.25,
                         help="Threshold parameter for the chosen SSF strategy.")
+    parser.add_argument("--buffer_size",       type=int,   default=6,
+                        help="Number of recent predictions kept in the SSF buffer.")
     parser.add_argument("--gt_dice_threshold", type=float, default=0.65)
     parser.add_argument("--window",             type=int,   default=10)
     parser.add_argument("--min_prompt_pixels",  type=int,   default=50)
@@ -621,6 +627,7 @@ if __name__ == "__main__":
         modality          = args.modality,
         output_threshold  = args.output_threshold,
         ssf_strategy      = chosen_ssf,
+        buffer_size       = args.buffer_size,
         gt_dice_threshold = args.gt_dice_threshold,
         window            = args.window,
         min_prompt_pixels = args.min_prompt_pixels,
