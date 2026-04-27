@@ -254,9 +254,9 @@ def run_benchmark(
     runs_per_vol: int = 5,
     mode: str = "ifl",
     modality: Optional[str] = None,
-    output_threshold: float = 0.45,
+    output_threshold: float = 0.5,
     ssf_strategy: Optional[BaseSSFStrategy] = None,
-    buffer_size: int = 6,
+    buffer_size: int = 4,
     gt_dice_threshold: float = 0.65,
     window: int = 10,
     min_prompt_pixels: int = 50,
@@ -276,9 +276,10 @@ def run_benchmark(
     nn_model_dir    : str or None — nnInteractive weights dir.  If None, weights
                       are downloaded from HuggingFace into /tmp.
     runs_per_vol    : int — number of random prompts per volume.
-    mode            : 'ssf' or 'ifl'
+    mode            : 'ssf', 'ifl' or 'ssf,ifl'
                       'ssf' — Self-Supervised Feedback only (no GT needed for driving predictions)
-                      'ifl' — Interactive Feedback Loop (GT-corrected, SSF disabled)
+                      'ifl' — Interactive Feedback Loop
+                      'ssf,ifl' - Both enabled
     modality        : 'CT' or 'MRI' — used only when normalization auto-detects >= v292.
     output_threshold: float — sigmoid threshold for Prompt-UNet outputs.
     ssf_strategy    : BaseSSFStrategy or None — SSF trigger strategy.  Only used when
@@ -312,7 +313,7 @@ def run_benchmark(
             model_path        = p_unet_model,
             modality          = modality,
             output_threshold  = output_threshold,
-            ssf_strategy      = None,   # IFL runs without SSF
+            ssf_strategy      = active_ssf,
             buffer_size       = buffer_size,
             gt_dice_threshold = gt_dice_threshold,
         )
@@ -587,15 +588,15 @@ if __name__ == "__main__":
         help="Path to nnInteractive weights directory.  If omitted, auto-downloaded.",
     )
     parser.add_argument("--runs_per_vol",      type=int,   default=5)
-    parser.add_argument("--mode",              default="ifl", choices=["ssf", "ifl"])
+    parser.add_argument("--mode",              default="ifl", help="Comma-separated modes: 'ssf', 'ifl', or 'ssf,ifl'.")
     parser.add_argument("--modality",          default=None, choices=["CT", "MRI"], help="Fallback modality if not in .npz")
-    parser.add_argument("--output_threshold",  type=float, default=0.45)
+    parser.add_argument("--output_threshold",  type=float, default=0.5)
     parser.add_argument("--ssf_strategy",      default="none",
                         choices=["none", "relative_ssim", "mask_dice", "confidence"],
                         help="SSF trigger strategy (only used with mode=ssf).")
-    parser.add_argument("--ssf_threshold",     type=float, default=0.25,
+    parser.add_argument("--ssf_threshold",     type=float, default=0.40,
                         help="Threshold parameter for the chosen SSF strategy.")
-    parser.add_argument("--buffer_size",       type=int,   default=6,
+    parser.add_argument("--buffer_size",       type=int,   default=4,
                         help="Number of recent predictions kept in the SSF buffer.")
     parser.add_argument("--gt_dice_threshold", type=float, default=0.65)
     parser.add_argument("--window",             type=int,   default=10)

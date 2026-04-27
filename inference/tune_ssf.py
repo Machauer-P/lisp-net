@@ -100,7 +100,7 @@ def tune_ssf():
     runs_per_vol = 10
     subset_ratio = 0.10
     batch_size   = 3     # Increase for large GPUs (e.g. 8 or 12)
-    buffer_size  = 6     # Number of recent predictions to aggregate for SSF refresh
+    buffer_size  = 4     # Number of recent predictions to aggregate for SSF refresh
 
     print(f"\n{'='*60}")
     print(f" SSF STRATEGY COMPARISON: {model_path}")

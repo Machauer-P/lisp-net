@@ -247,9 +247,9 @@ class VolumeInference:
         model_path: str | Path,
         modality: Optional[str],
         normalization: str = "auto",
-        output_threshold: float = 0.45,
+        output_threshold: float = 0.5,
         ssf_strategy: Optional[BaseSSFStrategy] = None,
-        buffer_size: int = 6,
+        buffer_size: int = 4,
         batch_size: int = 3,
         tile_trigger_fraction: float = 0.75,
     ):
