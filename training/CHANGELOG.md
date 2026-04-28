@@ -2,6 +2,17 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies.
 
+## [v330] - nnUNet-Inspired Loss & Scaled Data
+*Implementation: `loss.py`, `p_unet_330.ipynb`*
+
+**Objective Function Overhaul**
+- **Batch Dice + BCE Loss:** Replaced standard Binary Cross-Entropy with a combined `DiceBCELoss`. This implements a "Batch Soft Dice" which computes the Dice coefficient globally across the entire flattened batch. This provides much more stable gradients than per-sample Dice.
+
+**Training Configuration Scaling**
+- **Increased Training Buffer:** Scaled the data generator from 3,500 to 10,000 data points per buffer refresh to improve generalization and expose the model to more unique anatomical patches.
+- **Increased Refresh Frequency:** Increased the refresh rate (`new_ds`) from every 50 epochs to every 20 epochs to reduce the "sawtooth" overfitting pattern observed in validation metrics.
+- **Base Model:** Inherited the architecture and pipeline from v315 (Float32 + SE Attention + BraTS datasets), as it was identified as the best performing stable baseline.
+
 ## [v316] - Large Offset Variant
 *Implementation: `p_unet_316.ipynb`*
 
