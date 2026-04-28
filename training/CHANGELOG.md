@@ -2,6 +2,13 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies.
 
+## [v316] - Large Offset Variant
+*Implementation: `p_unet_316.ipynb`*
+
+**Hyperparameters**
+- **Increased Offset:** The slice distance offset was increased from 12 (v315) to 16.
+- **Identical to v315 otherwise:** Uses the same BraTS-augmented data pipeline and the v313 architecture (Float32 + SE Attention).
+
 ## [v315] - Addition of BraTS Datasets
 *Implementation: `prompt_unet_313.py`, `p_unet_315.ipynb`*
 
