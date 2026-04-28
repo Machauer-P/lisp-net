@@ -767,7 +767,7 @@ class InteractiveFeedbackLoop(VolumeInference):
         # When IFL is disabled, report None / [] so callers can distinguish
         # SSF-only runs from IFL runs.
         if self._ifl_enabled:
-            result.num_user_interacts = len(self._ifl_user_interacts) + 1  # +1 for initial
+            result.num_user_interacts = len(self._ifl_user_interacts)  # excl. initial prompt
             result.user_interacts_idx = list(self._ifl_user_interacts)
             result.gt_dice_threshold  = self.gt_dice_threshold
         else:

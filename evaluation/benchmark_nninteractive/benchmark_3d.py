@@ -272,21 +272,21 @@ def _compute_summary(records: List[dict]) -> dict:
 
     for mode in modes:
         m_recs = [r["per_mode"][mode] for r in records if mode in r.get("per_mode", {})]
-        ints   = [m["num_user_interacts"] for m in m_recs if m.get("num_user_interacts") is not None]
+        ints   = [m["n_interactions"] for m in m_recs if m.get("n_interactions") is not None]
         summary["per_mode"][mode] = {
-            "vol_dice"          : _stats([m["vol_dice"]    for m in m_recs]),
-            "window_dice"       : _stats([m["window_dice"]  for m in m_recs]),
-            "time_s"            : _stats([m["time_s"]       for m in m_recs]),
-            "num_user_interacts": _stats(ints) if ints else None,
+            "vol_dice"      : _stats([m["vol_dice"]   for m in m_recs]),
+            "window_dice"   : _stats([m["window_dice"] for m in m_recs]),
+            "time_s"        : _stats([m["time_s"]      for m in m_recs]),
+            "n_interactions": _stats(ints) if ints else None,
         }
 
     for nn_key in nn_keys:
         nn_recs = [r["nn_results"][nn_key] for r in records if nn_key in r.get("nn_results", {})]
         summary["nn_results"][nn_key] = {
-            "vol_dice"        : _stats([m["vol_dice"]         for m in nn_recs]),
-            "window_dice"     : _stats([m["window_dice"]       for m in nn_recs]),
-            "time_s"          : _stats([m["time_s"]            for m in nn_recs]),
-            "num_interactions": _stats([m["num_interactions"]  for m in nn_recs]),
+            "vol_dice"      : _stats([m["vol_dice"]        for m in nn_recs]),
+            "window_dice"   : _stats([m["window_dice"]     for m in nn_recs]),
+            "time_s"        : _stats([m["time_s"]          for m in nn_recs]),
+            "n_interactions": _stats([m["n_interactions"]  for m in nn_recs]),
         }
 
     # ---------- per-dataset --------------------------------------------------
@@ -297,10 +297,12 @@ def _compute_summary(records: List[dict]) -> dict:
         ds_entry: dict = {"n_runs": len(ds_recs), "per_mode": {}, "nn_results": {}}
         for mode in modes:
             m_recs = [r["per_mode"][mode] for r in ds_recs if mode in r.get("per_mode", {})]
+            ints   = [m["n_interactions"] for m in m_recs if m.get("n_interactions") is not None]
             ds_entry["per_mode"][mode] = {
-                "vol_dice"   : _stats([m["vol_dice"]    for m in m_recs]),
-                "window_dice": _stats([m["window_dice"]  for m in m_recs]),
-                "time_s"     : _stats([m["time_s"]       for m in m_recs]),
+                "vol_dice"      : _stats([m["vol_dice"]   for m in m_recs]),
+                "window_dice"   : _stats([m["window_dice"] for m in m_recs]),
+                "time_s"        : _stats([m["time_s"]      for m in m_recs]),
+                "n_interactions": _stats(ints) if ints else None,
             }
         for nn_key in nn_keys:
             nn_recs = [r["nn_results"][nn_key] for r in ds_recs if nn_key in r.get("nn_results", {})]
@@ -555,7 +557,7 @@ def run_benchmark(
                                 + len(result.forward_indices)
                                 + 1
                             ),
-                            "num_user_interacts"  : result.num_user_interacts,
+                            "n_interactions"      : result.num_user_interacts,  # incl. initial prompt
                             "user_interacts_idx"  : result.user_interacts_idx or [],
                             "ssf_strategy"        : result.ssf_strategy,
                             "gt_dice_threshold"   : result.gt_dice_threshold,
@@ -569,7 +571,8 @@ def run_benchmark(
                             if result.num_user_interacts is not None:
                                 ui_str = (
                                     f"  IFL-corrections="
-                                    f"{result.num_user_interacts - 1}"
+                                    f"{result.num_user_interacts}"
+                                    f" (excl. initial)"
                                 )
                             print(
                                 f"      [P-UNet {mode:8s}]  "
@@ -600,14 +603,15 @@ def run_benchmark(
                                 prompt_idx         = prompt_idx,
                                 window             = window,
                             )
-                        nn_t = time.perf_counter() - _t0
+                        nn_t    = time.perf_counter() - _t0
+                        # Excludes the initial prompt — only extra IFL corrections.
                         n_inter = len(ui_idx)
 
                         nn_results[nn_key] = {
-                            "vol_dice"        : nn_out["vol_dice"],
-                            "window_dice"     : nn_out["window_dice"],
-                            "time_s"          : nn_t,
-                            "num_interactions": n_inter,
+                            "vol_dice"       : nn_out["vol_dice"],
+                            "window_dice"    : nn_out["window_dice"],
+                            "time_s"         : nn_t,
+                            "n_interactions" : n_inter,  # incl. initial prompt
                         }
 
                         if verbose:
@@ -620,7 +624,7 @@ def run_benchmark(
                                 f"      [{label:<16}]  "
                                 f"vol={nn_out['vol_dice']:.3f}  "
                                 f"win={nn_out['window_dice']:.3f}  "
-                                f"({nn_t:.1f}s)  n_inter={n_inter}"
+                                f"({nn_t:.1f}s)  n_inter={n_inter} (excl. initial)"
                             )
 
                     record = _make_run_record(
@@ -705,56 +709,59 @@ def _print_summary(summary: dict):
     print(f"{'='*74}")
 
     for mode in modes:
-        m = summary.get("per_mode", {}).get(mode, {})
-        ifl = m.get("num_user_interacts")
+        m   = summary.get("per_mode", {}).get(mode, {})
+        ifl = m.get("n_interactions")
         print(f"\n  P-UNet [{mode}]")
-        print(f"    Vol  Dice  : {_f(m.get('vol_dice'))}")
-        print(f"    Win  Dice  : {_f(m.get('window_dice'))}")
-        print(f"    Time       : {_f(m.get('time_s'))}")
+        print(f"    Vol  Dice    : {_f(m.get('vol_dice'))}")
+        print(f"    Win  Dice    : {_f(m.get('window_dice'))}")
+        print(f"    Time         : {_f(m.get('time_s'))}")
         if ifl:
-            print(f"    IFL interacts: {_f(ifl)}")
+            print(f"    IFL corr.    : {_f(ifl)}  (excl. initial prompt)")
 
     for nn_key in nn_keys:
-        m = summary.get("nn_results", {}).get(nn_key, {})
-        n_i = m.get("num_interactions", {})
+        m     = summary.get("nn_results", {}).get(nn_key, {})
+        n_i   = m.get("n_interactions")
         label = "nnInteractive [baseline]" if nn_key == "baseline" else f"nnInteractive [+{nn_key}]"
         print(f"\n  {label}")
-        print(f"    Vol  Dice  : {_f(m.get('vol_dice'))}")
-        print(f"    Win  Dice  : {_f(m.get('window_dice'))}")
-        print(f"    Time       : {_f(m.get('time_s'))}")
+        print(f"    Vol  Dice    : {_f(m.get('vol_dice'))}")
+        print(f"    Win  Dice    : {_f(m.get('window_dice'))}")
+        print(f"    Time         : {_f(m.get('time_s'))}")
         if n_i:
-            print(f"    # interactions: {_f(n_i)}")
+            print(f"    IFL corr.    : {_f(n_i)}  (excl. initial prompt)")
 
     # --- per-dataset quick table ---
     per_ds = summary.get("per_dataset", {})
     if per_ds:
-        W = 68
+        W = 82
         print(f"\n  {'='*W}")
-        print(f"  {'Dataset':<28} {'Model':<22} {'Vol Dice':>10}  {'Win Dice':>10}  {'Time':>7}")
+        print(f"  {'Dataset':<28} {'Model':<22} {'Vol Dice':>10}  {'Win Dice':>10}  {'Time':>7}  {'Avg IFL':>8}")
         print(f"  {'-'*W}")
         for ds, ddata in per_ds.items():
             for mode in modes:
-                m  = ddata.get("per_mode", {}).get(mode, {})
-                vd = m.get("vol_dice", {})
-                wd = m.get("window_dice", {})
-                ts = m.get("time_s", {})
+                m   = ddata.get("per_mode", {}).get(mode, {})
+                vd  = m.get("vol_dice", {})
+                wd  = m.get("window_dice", {})
+                ts  = m.get("time_s", {})
+                ni  = m.get("n_interactions", {})
+                ni_str = f"{ni.get('mean', float('nan')):.1f}" if ni else "  —"
                 print(
                     f"  {ds:<28} [P-UNet {mode:<12}]  "
                     f"{vd.get('mean',float('nan')):.3f}±{vd.get('std',float('nan')):.3f}  "
                     f"{wd.get('mean',float('nan')):.3f}±{wd.get('std',float('nan')):.3f}  "
-                    f"{ts.get('mean',float('nan')):.1f}s"
+                    f"{ts.get('mean',float('nan')):.1f}s  "
+                    f"{ni_str:>8}"
                 )
             for nn_key in nn_keys:
-                m  = ddata.get("nn_results", {}).get(nn_key, {})
-                vd = m.get("vol_dice", {})
-                wd = m.get("window_dice", {})
-                ts = m.get("time_s", {})
+                m   = ddata.get("nn_results", {}).get(nn_key, {})
+                vd  = m.get("vol_dice", {})
+                wd  = m.get("window_dice", {})
+                ts  = m.get("time_s", {})
                 label = "nn_baseline" if nn_key == "baseline" else f"nn+{nn_key}"
                 print(
                     f"  {ds:<28} [{label:<20}]  "
                     f"{vd.get('mean',float('nan')):.3f}±{vd.get('std',float('nan')):.3f}  "
                     f"{wd.get('mean',float('nan')):.3f}±{wd.get('std',float('nan')):.3f}  "
-                    f"{ts.get('mean',float('nan')):.1f}s"
+                    f"{ts.get('mean',float('nan')):.1f}s  {'':>8}"
                 )
             print(f"  {'-'*W}")
         print()
