@@ -250,13 +250,25 @@ def _compute_summary(records: List[dict]) -> dict:
     modes    = records[0].get("modes_evaluated", [])
     nn_keys  = sorted({k for r in records for k in r.get("nn_results", {})})
 
-    # ---------- overall ------------------------------------------------------
     summary: dict = {
         "n_runs"         : len(records),
         "modes_evaluated": modes,
         "per_mode"       : {},
         "nn_results"     : {},
     }
+
+    # Extract configuration if available (from the first record)
+    if records:
+        first_p = records[0].get("per_mode", {})
+        summary["config"] = {
+            "p_unet_model": records[0].get("p_unet_model"),
+            "ssf_strategy": {
+                m: first_p[m].get("ssf_strategy") for m in modes if m in first_p
+            },
+            "gt_threshold": {
+                m: first_p[m].get("gt_dice_threshold") for m in modes if m in first_p
+            }
+        }
 
     for mode in modes:
         m_recs = [r["per_mode"][mode] for r in records if mode in r.get("per_mode", {})]
@@ -545,6 +557,8 @@ def run_benchmark(
                             ),
                             "num_user_interacts"  : result.num_user_interacts,
                             "user_interacts_idx"  : result.user_interacts_idx or [],
+                            "ssf_strategy"        : result.ssf_strategy,
+                            "gt_dice_threshold"   : result.gt_dice_threshold,
                         }
                         if return_predictions:
                             entry["pred_vol"] = p_pred_vol

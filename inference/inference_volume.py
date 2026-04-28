@@ -105,12 +105,12 @@ class RunResult:
     normalization_mode : str
         'universal' or 'legacy' — whichever was actually applied.
 
-    IFL-specific (only set by InteractiveFeedbackLoop)
-    --------------------------------------------------
-    num_user_interacts : int
-        Total interactions including the initial prompt (always ≥ 1).
-    user_interacts_idx : list[int]
-        Volume slice indices where GT was substituted for the prediction.
+    # Metadata for reproducibility
+    # ----------------------------
+    ssf_strategy : str or None
+        Name of the SSF strategy used (e.g. 'RelativeSSIM(t=0.40)').
+    gt_dice_threshold : float or None
+        IFL threshold used (only for IFL modes).
     """
     results_3d: np.ndarray
     gt_3d: np.ndarray
@@ -119,6 +119,9 @@ class RunResult:
     prompt_axis: int
     prompt_idx: int
     normalization_mode: str
+    # Metadata
+    ssf_strategy: Optional[str] = None
+    gt_dice_threshold: Optional[float] = None
     # IFL-only — None / empty in plain VolumeInference
     num_user_interacts: Optional[int] = None
     user_interacts_idx: List[int] = field(default_factory=list)
@@ -634,14 +637,6 @@ class VolumeInference:
                 cur_prompt_mask = prompt_mask_plane
                 self._ssf.reset(prompt_mask_128)
 
-        if not backward_indices:
-            results.append(prompt_mask_plane.copy())
-            ground_truths.append(prompt_mask_plane.copy())
-            confidence_per_slice_lst.append(0.0)
-
-        results_arr = np.stack(results, axis=0)        # (S, H, W)
-        gt_arr      = np.stack(ground_truths, axis=0)  # (S, H, W)
-
         return RunResult(
             results_3d           = results_arr,
             gt_3d                = gt_arr,
@@ -650,6 +645,7 @@ class VolumeInference:
             prompt_axis          = prompt_axis,
             prompt_idx           = prompt_idx,
             normalization_mode   = self.normalization_mode,
+            ssf_strategy         = self._ssf.strategy.name if self._ssf.strategy else None,
             confidence_per_slice = confidence_per_slice_lst,
         )
 
@@ -765,9 +761,11 @@ class InteractiveFeedbackLoop(VolumeInference):
         if self._ifl_enabled:
             result.num_user_interacts = len(self._ifl_user_interacts) + 1  # +1 for initial
             result.user_interacts_idx = list(self._ifl_user_interacts)
+            result.gt_dice_threshold  = self.gt_dice_threshold
         else:
             result.num_user_interacts = None
             result.user_interacts_idx = []
+            result.gt_dice_threshold  = None
         return result
 
 
