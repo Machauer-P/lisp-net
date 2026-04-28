@@ -637,6 +637,14 @@ class VolumeInference:
                 cur_prompt_mask = prompt_mask_plane
                 self._ssf.reset(prompt_mask_128)
 
+        if not backward_indices:
+            results.append(prompt_mask_plane.copy())
+            ground_truths.append(prompt_mask_plane.copy())
+            confidence_per_slice_lst.append(0.0)
+
+        results_arr = np.stack(results, axis=0)        # (S, H, W)
+        gt_arr      = np.stack(ground_truths, axis=0)  # (S, H, W)
+
         return RunResult(
             results_3d           = results_arr,
             gt_3d                = gt_arr,
