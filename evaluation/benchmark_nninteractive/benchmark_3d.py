@@ -1,82 +1,66 @@
 """
 evaluation/benchmark_nninteractive/benchmark_3d.py
 ===================================================
-Standalone benchmark script comparing Prompt-UNet (multiple modes) and
+Standalone benchmark script comparing Prompt U-Net (multiple modes) and
 nnInteractive on 3-D volumes loaded from .npz files.
 
-Multi-mode design
------------------
-When ``modes`` is a list of mode strings, **all modes are evaluated on the
-exact same random initial prompt** within each volume run.  This enables a
-fair within-prompt comparison (e.g. SSF vs IFL vs IFL+SSF).
+Multi-mode / fair-comparison design
+------------------------------------
+All P-UNet modes in ``modes`` are evaluated on the **exact same** random
+initial prompt within every (volume, run).  A single loaded
+``InteractiveFeedbackLoop`` instance is reconfigured between modes via
+``set_ifl_enabled()`` / ``set_ssf_strategy()`` — no model reload needed.
 
-A single ``InteractiveFeedbackLoop`` instance is loaded once and then
-reconfigured between modes via ``set_ifl_enabled()`` / ``set_ssf_strategy()``
-— no model reload is needed for multiple modes.
+nnInteractive runs
+------------------
+nnInteractive is executed:
+  • once as a **baseline** — initial prompt only (no extra interactions)
+  • once **paired** with every IFL-enabled P-UNet mode, using the
+    *identical* ``user_interacts_idx`` that the IFL loop produced
 
-nnInteractive is run **once** per (volume, run) using the initial prompt
-with no extra interactions, providing a single-click baseline.
+Example: modes = ['ssf', 'ifl', 'ifl_ssf']
+  P-UNet ssf    → compared against nn_baseline   (0 extra slices)
+  P-UNet ifl    → compared against nn_ifl         (same n slices as IFL)
+  P-UNet ifl_ssf→ compared against nn_ifl_ssf     (same n slices as IFL+SSF)
 
 Supported mode strings (case-insensitive)
------------------------------------------
-  'ssf'                     Self-Supervised Feedback only
-  'ifl'                     Interactive Feedback Loop + GT correction, no SSF
-  'ifl_ssf' / 'ssf_ifl'    IFL + SSF combined
-  'none'                    Plain forward pass (no SSF, no IFL)
-
-Inputs
-------
-* One or more .npz files in the standard ds_handler format.
-* A saved Prompt-UNet .keras model.
-* A directory containing nnInteractive model weights.
-
-Outputs
--------
-results_<model>_<modes>_<timestamp>.pkl          – Full per-run result list.
-results_<model>_<modes>_<timestamp>_summary.json – Summary statistics.
+------------------------------------------
+  'ssf'                   Self-Supervised Feedback only, no GT correction
+  'ifl'                   Interactive Feedback Loop (GT correction), no SSF
+  'ifl_ssf' / 'ssf_ifl'  IFL + SSF combined
+  'none'                  Plain forward pass (no SSF, no IFL)
 
 Record structure (one dict per (volume, run))
----------------------------------------------
+----------------------------------------------
 {
     # Identification & shared prompt info
     "volume_id", "pid", "run_idx", "dataset_name", "modality",
     "p_unet_model", "prompt_axis", "prompt_idx", "selected_roi",
     "shape_original", "modes_evaluated",
 
-    # Per-mode Prompt-UNet results  (nested, keyed by canonical mode name)
+    # per-mode Prompt-UNet results (nested dict, keyed by canonical mode name)
     "per_mode": {
         "<mode>": {
             "vol_dice", "window_dice", "time_s",
             "normalization_mode", "num_slices_evaluated",
-            "num_user_interacts",   # None for SSF / none modes
-            "user_interacts_idx",   # []   for SSF / none modes
+            "num_user_interacts",   # None for ssf / none modes
+            "user_interacts_idx",   # []   for ssf / none modes
         },
         ...
     },
 
-    # nnInteractive (single baseline run, initial prompt only)
-    "nn_vol_dice", "nn_window_dice", "nn_time_s",
+    # nnInteractive results (nested dict)
+    "nn_results": {
+        "baseline": {               # always present — initial prompt only
+            "vol_dice", "window_dice", "time_s", "num_interactions": 0
+        },
+        "<ifl_mode>": {             # present for each IFL P-UNet mode
+            "vol_dice", "window_dice", "time_s",
+            "num_interactions": N   # same N as the paired P-UNet IFL mode
+        },
+        ...
+    },
 }
-
-Usage (CLI)
------------
-    python evaluation/benchmark_nninteractive/benchmark_3d.py \\
-        --npz_paths data/test_data/han_seg_ct.npz \\
-        --p_unet_model training/p_unet_315.keras \\
-        --modes ssf ifl ifl_ssf \\
-        --runs_per_vol 5
-
-Usage (from notebook / script)
--------------------------------
-    from evaluation.benchmark_nninteractive.benchmark_3d import run_benchmark
-
-    records = run_benchmark(
-        npz_paths    = ["data/test_data/han_seg_ct.npz"],
-        p_unet_model = "training/p_unet_315.keras",
-        modes        = ["ssf", "ifl", "ifl_ssf"],
-        runs_per_vol = 5,
-        output_dir   = "evaluation/benchmark_nninteractive/results",
-    )
 """
 
 from __future__ import annotations
@@ -105,7 +89,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 from data.test_data.ds_handler import load_dataset
 from utils.metrics import volumetric_dice, dice_window_prompt
 from inference.inference_volume import (
-    VolumeInference,
     InteractiveFeedbackLoop,
     generate_initial_prompt,
     RunResult,
@@ -128,15 +111,13 @@ def _parse_mode(mode_str: str):
     Parse a mode string into ``(use_ifl, use_ssf)`` flags.
 
     Accepted strings (case-insensitive, separators ignored):
-        'ssf'                     → (False, True)
-        'ifl'                     → (True,  False)
-        'ifl_ssf' / 'ssf_ifl' / 'ssf,ifl'  → (True, True)
-        'none'                    → (False, False)
+        'ssf'                         → (False, True)
+        'ifl'                         → (True,  False)
+        'ifl_ssf' / 'ssf_ifl' / 'ssf,ifl' → (True, True)
+        'none'                        → (False, False)
     """
     m = mode_str.lower().replace("-", "_").replace(",", "_")
-    use_ifl = "ifl" in m
-    use_ssf = "ssf" in m
-    return use_ifl, use_ssf
+    return "ifl" in m, "ssf" in m
 
 
 def _canonical_mode(mode_str: str) -> str:
@@ -152,34 +133,46 @@ def _canonical_mode(mode_str: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# nnInteractive interaction schedule
+# ---------------------------------------------------------------------------
+
+def _nn_schedule(modes: List[str], per_mode_results: Dict[str, dict]) -> List[tuple]:
+    """
+    Build the ordered list of ``(nn_key, user_interacts_idx)`` for all
+    nnInteractive invocations in a single (volume, run).
+
+    Returns
+    -------
+    list of (nn_key: str, user_interacts_idx: list[int])
+        "baseline"  → []  always first
+        "<mode>"    → user_interacts_idx from that IFL mode's P-UNet result
+    """
+    schedule = [("baseline", [])]
+    for mode in modes:
+        use_ifl, _ = _parse_mode(mode)
+        if use_ifl:
+            ui_idx = per_mode_results[mode].get("user_interacts_idx", [])
+            schedule.append((mode, list(ui_idx)))
+    return schedule
+
+
+# ---------------------------------------------------------------------------
 # Result helpers
 # ---------------------------------------------------------------------------
 
-def _reconstruct_volume(
-    result: RunResult,
-    vol_shape: tuple,
-) -> np.ndarray:
-    """
-    Rebuild a full 3-D binary prediction volume from a RunResult.
-
-    Slices not visited remain zero.  Required so volumetric Dice is computed
-    on the same domain as nnInteractive (full volume).
-    """
+def _reconstruct_volume(result: RunResult, vol_shape: tuple) -> np.ndarray:
+    """Rebuild a full 3-D binary prediction volume from a RunResult."""
     pred_vol = np.zeros(vol_shape, dtype=np.float32)
-
-    ordered_indices = (
+    ordered  = (
         list(reversed(result.backward_indices))
         + [result.prompt_idx]
         + result.forward_indices
     )
-
     slices_2d = result.results_3d
     if slices_2d.ndim == 2:
         slices_2d = slices_2d[np.newaxis]
-
     axis = result.prompt_axis
-
-    for local_i, vol_idx in enumerate(ordered_indices):
+    for local_i, vol_idx in enumerate(ordered):
         if local_i >= len(slices_2d):
             break
         s = slices_2d[local_i]
@@ -189,7 +182,6 @@ def _reconstruct_volume(
             pred_vol[:, vol_idx, :] = s
         else:
             pred_vol[:, :, vol_idx] = s
-
     return pred_vol
 
 
@@ -206,33 +198,35 @@ def _make_run_record(
     modality: str,
     p_unet_model_name: str,
     per_mode_results: Dict[str, dict],
-    nn_vol_dice: float,
-    nn_window_dice: float,
-    nn_time_s: float,
+    nn_results: Dict[str, dict],
 ) -> dict:
-    """Build one unified record for a (volume, run) pair."""
+    """Build one unified record for a (volume, run) pair.
+
+    nn_results keys
+    ---------------
+    "baseline"   — nnInteractive with initial prompt only (no IFL).
+    "<mode>"     — nnInteractive paired with that IFL P-UNet mode.
+    """
     return {
-        # Identification
         "volume_id"       : volume_id,
         "pid"             : pid,
         "run_idx"         : run_idx,
         "dataset_name"    : dataset_name,
         "modality"        : modality,
         "p_unet_model"    : p_unet_model_name,
-        # Prompt — shared across ALL modes in this run
         "prompt_axis"     : prompt_axis,
         "prompt_idx"      : prompt_idx,
         "selected_roi"    : int(selected_roi),
         "shape_original"  : list(shape_original),
         "modes_evaluated" : list(modes_evaluated),
-        # Per-mode Prompt-UNet results (nested, keyed by canonical mode name)
         "per_mode"        : per_mode_results,
-        # nnInteractive — single baseline (initial prompt only)
-        "nn_vol_dice"     : nn_vol_dice,
-        "nn_window_dice"  : nn_window_dice,
-        "nn_time_s"       : nn_time_s,
+        "nn_results"      : nn_results,
     }
 
+
+# ---------------------------------------------------------------------------
+# Summary statistics
+# ---------------------------------------------------------------------------
 
 def _compute_summary(records: List[dict]) -> dict:
     """Aggregate per-run records into summary statistics for all modes."""
@@ -253,87 +247,76 @@ def _compute_summary(records: List[dict]) -> dict:
     if not records:
         return {}
 
-    modes = records[0].get("modes_evaluated", [])
+    modes    = records[0].get("modes_evaluated", [])
+    nn_keys  = sorted({k for r in records for k in r.get("nn_results", {})})
 
+    # ---------- overall ------------------------------------------------------
     summary: dict = {
         "n_runs"         : len(records),
         "modes_evaluated": modes,
         "per_mode"       : {},
-        "nn"             : {
-            "vol_dice"   : _stats([r["nn_vol_dice"]    for r in records]),
-            "window_dice": _stats([r["nn_window_dice"]  for r in records]),
-            "time_s"     : _stats([r["nn_time_s"]       for r in records]),
-        },
+        "nn_results"     : {},
     }
 
     for mode in modes:
-        mode_recs = [
-            r["per_mode"][mode]
-            for r in records
-            if mode in r.get("per_mode", {})
-        ]
-        interacts = [
-            m["num_user_interacts"]
-            for m in mode_recs
-            if m.get("num_user_interacts") is not None
-        ]
+        m_recs = [r["per_mode"][mode] for r in records if mode in r.get("per_mode", {})]
+        ints   = [m["num_user_interacts"] for m in m_recs if m.get("num_user_interacts") is not None]
         summary["per_mode"][mode] = {
-            "vol_dice"          : _stats([m["vol_dice"]    for m in mode_recs]),
-            "window_dice"       : _stats([m["window_dice"]  for m in mode_recs]),
-            "time_s"            : _stats([m["time_s"]       for m in mode_recs]),
-            "num_user_interacts": _stats(interacts) if interacts else None,
+            "vol_dice"          : _stats([m["vol_dice"]    for m in m_recs]),
+            "window_dice"       : _stats([m["window_dice"]  for m in m_recs]),
+            "time_s"            : _stats([m["time_s"]       for m in m_recs]),
+            "num_user_interacts": _stats(ints) if ints else None,
         }
 
-    # Per-dataset breakdown
-    dataset_names = sorted(set(r["dataset_name"] for r in records))
-    per_dataset: dict = {}
-    for ds in dataset_names:
-        ds_recs = [r for r in records if r["dataset_name"] == ds]
-        ds_entry: dict = {
-            "n_runs"  : len(ds_recs),
-            "per_mode": {},
-            "nn"      : {
-                "vol_dice"   : _stats([r["nn_vol_dice"]    for r in ds_recs]),
-                "window_dice": _stats([r["nn_window_dice"]  for r in ds_recs]),
-                "time_s"     : _stats([r["nn_time_s"]       for r in ds_recs]),
-            },
+    for nn_key in nn_keys:
+        nn_recs = [r["nn_results"][nn_key] for r in records if nn_key in r.get("nn_results", {})]
+        summary["nn_results"][nn_key] = {
+            "vol_dice"        : _stats([m["vol_dice"]         for m in nn_recs]),
+            "window_dice"     : _stats([m["window_dice"]       for m in nn_recs]),
+            "time_s"          : _stats([m["time_s"]            for m in nn_recs]),
+            "num_interactions": _stats([m["num_interactions"]  for m in nn_recs]),
         }
+
+    # ---------- per-dataset --------------------------------------------------
+    datasets    = sorted(set(r["dataset_name"] for r in records))
+    per_dataset: dict = {}
+    for ds in datasets:
+        ds_recs = [r for r in records if r["dataset_name"] == ds]
+        ds_entry: dict = {"n_runs": len(ds_recs), "per_mode": {}, "nn_results": {}}
         for mode in modes:
-            mode_recs = [
-                r["per_mode"][mode]
-                for r in ds_recs
-                if mode in r.get("per_mode", {})
-            ]
+            m_recs = [r["per_mode"][mode] for r in ds_recs if mode in r.get("per_mode", {})]
             ds_entry["per_mode"][mode] = {
-                "vol_dice"   : _stats([m["vol_dice"]    for m in mode_recs]),
-                "window_dice": _stats([m["window_dice"]  for m in mode_recs]),
-                "time_s"     : _stats([m["time_s"]       for m in mode_recs]),
+                "vol_dice"   : _stats([m["vol_dice"]    for m in m_recs]),
+                "window_dice": _stats([m["window_dice"]  for m in m_recs]),
+                "time_s"     : _stats([m["time_s"]       for m in m_recs]),
+            }
+        for nn_key in nn_keys:
+            nn_recs = [r["nn_results"][nn_key] for r in ds_recs if nn_key in r.get("nn_results", {})]
+            ds_entry["nn_results"][nn_key] = {
+                "vol_dice"   : _stats([m["vol_dice"]    for m in nn_recs]),
+                "window_dice": _stats([m["window_dice"]  for m in nn_recs]),
+                "time_s"     : _stats([m["time_s"]       for m in nn_recs]),
             }
         per_dataset[ds] = ds_entry
     summary["per_dataset"] = per_dataset
 
-    # Per-volume breakdown
-    volume_ids = sorted(set(r["volume_id"] for r in records))
+    # ---------- per-volume ---------------------------------------------------
+    volume_ids  = sorted(set(r["volume_id"] for r in records))
     per_volume: dict = {}
     for vid in volume_ids:
         v_recs = [r for r in records if r["volume_id"] == vid]
-        v_entry: dict = {
-            "n_runs"  : len(v_recs),
-            "per_mode": {},
-            "nn"      : {
-                "vol_dice"   : _stats([r["nn_vol_dice"]    for r in v_recs]),
-                "window_dice": _stats([r["nn_window_dice"]  for r in v_recs]),
-            },
-        }
+        v_entry: dict = {"n_runs": len(v_recs), "per_mode": {}, "nn_results": {}}
         for mode in modes:
-            mode_recs = [
-                r["per_mode"][mode]
-                for r in v_recs
-                if mode in r.get("per_mode", {})
-            ]
+            m_recs = [r["per_mode"][mode] for r in v_recs if mode in r.get("per_mode", {})]
             v_entry["per_mode"][mode] = {
-                "vol_dice"   : _stats([m["vol_dice"]    for m in mode_recs]),
-                "window_dice": _stats([m["window_dice"]  for m in mode_recs]),
+                "vol_dice"   : _stats([m["vol_dice"]    for m in m_recs]),
+                "window_dice": _stats([m["window_dice"]  for m in m_recs]),
+            }
+        for nn_key in nn_keys:
+            nn_recs = [r["nn_results"][nn_key] for r in v_recs if nn_key in r.get("nn_results", {})]
+            v_entry["nn_results"][nn_key] = {
+                "vol_dice"   : _stats([m["vol_dice"]    for m in nn_recs]),
+                "window_dice": _stats([m["window_dice"]  for m in nn_recs]),
             }
         per_volume[vid] = v_entry
     summary["per_volume"] = per_volume
@@ -366,80 +349,72 @@ def run_benchmark(
     batch_size: int = 3,
 ) -> List[dict]:
     """
-    Run the 3-D benchmark with multiple Prompt-UNet modes on the **same** prompt.
+    Run the 3-D benchmark with multiple P U-Net modes on the **same** prompt
+    and paired nnInteractive runs.
 
     Parameters
     ----------
-    npz_paths       : list of str — paths to .npz datasets (ds_handler format).
-    p_unet_model    : str — path to .keras model file.
+    npz_paths       : list[str] — .npz dataset paths (ds_handler format).
+    p_unet_model    : str — path to .keras model.
     nn_model_dir    : str or None — nnInteractive weights dir (auto-download if None).
-    runs_per_vol    : int — number of random prompts evaluated per volume.
+    runs_per_vol    : int — random prompts per volume.
     modes           : str or list[str]
-                      One or more modes, all run on the **same** initial prompt:
-                        'ssf'     SSF only
-                        'ifl'     IFL only
-                        'ifl_ssf' IFL + SSF
-                        'none'    plain baseline
-                      A bare comma-separated string is also accepted.
-    modality        : 'CT' or 'MRI' — fallback when not stored in .npz.
-    output_threshold: float — sigmoid threshold for binary masks.
+                      All modes run on the **same** initial prompt per run.
+                      Accepted: 'ssf', 'ifl', 'ifl_ssf', 'none'.
+    modality        : 'CT' or 'MRI' — fallback (required if .npz has no modality).
+    output_threshold: float — sigmoid→binary threshold.
     ssf_strategy    : BaseSSFStrategy or None — used by SSF-enabled modes.
     buffer_size     : int — SSF rolling buffer depth.
     gt_dice_threshold : float — IFL Dice threshold for GT substitution.
-    window          : int — half-width for windowed Dice evaluation.
-    min_prompt_pixels : int — minimum foreground pixels for prompt eligibility.
-    max_volumes     : int or None — cap total evaluated volumes.
-    return_predictions : bool — embed prediction arrays in records (RAM-heavy).
-    output_dir      : str or None — directory for pkl + json outputs.
-    nn_device       : str or None — device for nnInteractive ('cuda:0', 'cpu', …).
-    verbose         : bool — print progress.
+    window          : int — half-width for windowed Dice.
+    min_prompt_pixels : int — minimum foreground pixels for a valid prompt.
+    max_volumes     : int or None — cap on total evaluated volumes.
+    return_predictions : bool — embed arrays in records (high RAM).
+    output_dir      : str or None — dir for pkl + json outputs.
+    nn_device       : str or None — device for nnInteractive.
+    verbose         : bool — print per-run progress.
     batch_size      : int — slices per GPU forward pass.
 
     Returns
     -------
-    list of per-run dicts (one dict per (volume, run) containing all modes).
+    list[dict] — one record per (volume, run), containing per-mode P-UNet
+    results and nn_results (baseline + one per IFL mode).
     """
-    # --- Normalise modes list ---
+    # --- Normalise modes list ------------------------------------------------
     if isinstance(modes, str):
         modes = [m.strip() for m in modes.replace(",", " ").split() if m.strip()]
-    modes_canonical = []
     seen: set = set()
+    modes_c: List[str] = []
     for m in modes:
         c = _canonical_mode(m)
         if c not in seen:
-            modes_canonical.append(c)
+            modes_c.append(c)
             seen.add(c)
-    modes = modes_canonical
+    modes = modes_c
+
+    ifl_modes = [m for m in modes if _parse_mode(m)[0]]
 
     if verbose:
-        print(f"\n{'='*60}")
-        print(f"Loading Prompt-UNet : {p_unet_model}")
-        print(f"Modes to evaluate   : {modes}")
-        print(
-            "(All modes share the SAME initial prompt per run; "
-            "nnInteractive runs once as baseline)"
-        )
+        print(f"\n{'='*64}")
+        print(f"Loading Prompt U-Net : {p_unet_model}")
+        print(f"P U-Net modes        : {modes}")
+        print(f"nnInteractive runs  : baseline + {ifl_modes}  (paired with IFL modes)")
 
-    # --- Load ONE InteractiveFeedbackLoop (reused across all modes) ----------
-    # set_ifl_enabled(False) makes it behave like plain VolumeInference;
-    # set_ssf_strategy(None) disables SSF — so one instance covers all modes.
+    # --- Load ONE InteractiveFeedbackLoop instance ----------------------------
     p_unet = InteractiveFeedbackLoop(
         model_path        = p_unet_model,
         modality          = modality,
         output_threshold  = output_threshold,
-        ssf_strategy      = ssf_strategy,   # swapped per-mode at runtime
+        ssf_strategy      = ssf_strategy,
         buffer_size       = buffer_size,
         batch_size        = batch_size,
         gt_dice_threshold = gt_dice_threshold,
     )
 
-    # --- Load nnInteractive ---
+    # --- Load nnInteractive ---------------------------------------------------
     if verbose:
-        print(f"\nLoading nnInteractive …")
-    nn_infer = NNInteractiveInference(
-        model_dir = nn_model_dir,
-        device    = nn_device,
-    )
+        print("\nLoading nnInteractive …")
+    nn_infer = NNInteractiveInference(model_dir=nn_model_dir, device=nn_device)
 
     all_records: List[dict] = []
     volume_counter = 0
@@ -450,10 +425,9 @@ def run_benchmark(
             if not Path(npz_path).is_absolute()
             else npz_path
         )
-
         if verbose:
-            print(f"\n{'='*60}")
-            print(f"Loading dataset: {npz_path}")
+            print(f"\n{'='*64}")
+            print(f"Dataset: {npz_path}")
 
         try:
             dataset = load_dataset(npz_path)
@@ -462,16 +436,16 @@ def run_benchmark(
             continue
 
         dataset_name = Path(npz_path).stem
-
         pids = list(dataset.keys())
+
         if max_volumes is not None:
             import random
-            rng = random.Random(42)
+            rng   = random.Random(42)
             rng.shuffle(pids)
-            remaining = max_volumes - volume_counter
-            if remaining <= 0:
+            avail = max_volumes - volume_counter
+            if avail <= 0:
                 break
-            pids = pids[:remaining]
+            pids = pids[:avail]
 
         for pid in pids:
             item    = dataset[pid]
@@ -481,18 +455,18 @@ def run_benchmark(
 
             if vol_mod is None:
                 raise ValueError(
-                    f"Dataset {dataset_name} (pid {pid}) has no 'modality' field, "
+                    f"Dataset {dataset_name} / pid {pid} has no 'modality' field "
                     f"and no fallback --modality was provided."
                 )
 
             if isinstance(segs, list):
-                if len(segs) == 0:
+                if not segs:
                     if verbose:
                         print(f"  [{pid}] No segmentations — skipping.")
                     continue
                 seg_3d_labels = np.zeros_like(img_3d, dtype=np.int32)
-                for label_idx, seg_arr in enumerate(segs, start=1):
-                    seg_3d_labels[np.asarray(seg_arr) != 0] = label_idx
+                for label_i, seg_arr in enumerate(segs, start=1):
+                    seg_3d_labels[np.asarray(seg_arr) != 0] = label_i
             else:
                 seg_3d_labels = np.asarray(segs).astype(np.int32)
 
@@ -506,20 +480,20 @@ def run_benchmark(
 
             if verbose:
                 print(
-                    f"\n  Volume {volume_counter}: {volume_id} "
-                    f"| shape={img_3d.shape} | modality={vol_mod}"
+                    f"\n  Vol {volume_counter}: {volume_id} "
+                    f"| shape={img_3d.shape} | mod={vol_mod}"
                 )
 
-            img_4d = np.expand_dims(img_3d, axis=0)   # nnInteractive needs (1,X,Y,Z)
+            img_4d = np.expand_dims(img_3d, axis=0)
 
             for run_idx in range(runs_per_vol):
                 if verbose:
                     print(f"    Run {run_idx+1}/{runs_per_vol}")
 
                 try:
-                    # -----------------------------------------------------------
-                    # ONE random initial prompt — shared by all modes AND nnInteractive
-                    # -----------------------------------------------------------
+                    # ----------------------------------------------------------
+                    # ONE random prompt — shared by ALL P-UNet modes AND nn runs
+                    # ----------------------------------------------------------
                     (
                         initial_prompt_3d,
                         initial_prompt_2d_seg,
@@ -529,15 +503,13 @@ def run_benchmark(
 
                     seg_3d_binary = (seg_3d_labels == selected_roi).astype(np.float32)
 
-                    # -----------------------------------------------------------
-                    # Run ALL P-UNet modes on exactly the same initial prompt
-                    # -----------------------------------------------------------
+                    # ----------------------------------------------------------
+                    # P-UNet: all modes on the same prompt
+                    # ----------------------------------------------------------
                     per_mode_results: Dict[str, dict] = {}
 
                     for mode in modes:
                         use_ifl, use_ssf = _parse_mode(mode)
-
-                        # Reconfigure the single loaded instance
                         p_unet.set_ifl_enabled(use_ifl)
                         p_unet.set_ssf_strategy(ssf_strategy if use_ssf else None)
 
@@ -550,7 +522,7 @@ def run_benchmark(
                             prompt_idx            = prompt_idx,
                             modality              = vol_mod,
                         )
-                        mode_time_s = time.perf_counter() - _t0
+                        mode_t = time.perf_counter() - _t0
 
                         p_pred_vol    = _reconstruct_volume(result, img_3d.shape)
                         p_vol_dice    = volumetric_dice(seg_3d_binary, p_pred_vol)
@@ -561,10 +533,10 @@ def run_benchmark(
                             window=window,
                         )
 
-                        mode_entry: dict = {
+                        entry: dict = {
                             "vol_dice"            : p_vol_dice,
                             "window_dice"         : p_window_dice,
-                            "time_s"              : mode_time_s,
+                            "time_s"              : mode_t,
                             "normalization_mode"  : result.normalization_mode,
                             "num_slices_evaluated": (
                                 len(result.backward_indices)
@@ -575,43 +547,67 @@ def run_benchmark(
                             "user_interacts_idx"  : result.user_interacts_idx or [],
                         }
                         if return_predictions:
-                            mode_entry["pred_vol"] = p_pred_vol
-
-                        per_mode_results[mode] = mode_entry
+                            entry["pred_vol"] = p_pred_vol
+                        per_mode_results[mode] = entry
 
                         if verbose:
                             ui_str = ""
                             if result.num_user_interacts is not None:
-                                ui_str = f"  IFL-corrections={result.num_user_interacts - 1}"
+                                ui_str = (
+                                    f"  IFL-corrections="
+                                    f"{result.num_user_interacts - 1}"
+                                )
                             print(
-                                f"      [{mode:8s}]  vol={p_vol_dice:.3f}  "
-                                f"win={p_window_dice:.3f}  ({mode_time_s:.1f}s){ui_str}"
+                                f"      [P-UNet {mode:8s}]  "
+                                f"vol={p_vol_dice:.3f}  win={p_window_dice:.3f}  "
+                                f"({mode_t:.1f}s){ui_str}"
                             )
 
-                    # -----------------------------------------------------------
-                    # nnInteractive — ONCE per run, initial prompt only
-                    # -----------------------------------------------------------
-                    _nn_stdout = io.StringIO()
-                    _nn_stderr = io.StringIO()
-                    _t0 = time.perf_counter()
-                    with contextlib.redirect_stdout(_nn_stdout), \
-                         contextlib.redirect_stderr(_nn_stderr):
-                        nn_out = nn_infer.run(
-                            img_4d             = img_4d,
-                            seg_3d             = seg_3d_binary,
-                            initial_prompt_3d  = initial_prompt_3d,
-                            user_interacts_idx = [],    # initial prompt only
-                            prompt_axis        = prompt_axis,
-                            prompt_idx         = prompt_idx,
-                            window             = window,
-                        )
-                    nn_time_s = time.perf_counter() - _t0
+                    # ----------------------------------------------------------
+                    # nnInteractive: baseline + one run per IFL-enabled P-UNet mode
+                    #
+                    #   nn_baseline   — initial prompt only (user_interacts_idx=[])
+                    #   nn_<ifl_mode> — same user_interacts_idx as that IFL mode
+                    # ----------------------------------------------------------
+                    nn_results: Dict[str, dict] = {}
+                    nn_schedule = _nn_schedule(modes, per_mode_results)
 
-                    if verbose:
-                        print(
-                            f"      [nnInteract]  vol={nn_out['vol_dice']:.3f}  "
-                            f"win={nn_out['window_dice']:.3f}  ({nn_time_s:.1f}s)"
-                        )
+                    for nn_key, ui_idx in nn_schedule:
+                        _nn_buf = io.StringIO()
+                        _t0     = time.perf_counter()
+                        with contextlib.redirect_stdout(_nn_buf), \
+                             contextlib.redirect_stderr(_nn_buf):
+                            nn_out = nn_infer.run(
+                                img_4d             = img_4d,
+                                seg_3d             = seg_3d_binary,
+                                initial_prompt_3d  = initial_prompt_3d,
+                                user_interacts_idx = ui_idx,
+                                prompt_axis        = prompt_axis,
+                                prompt_idx         = prompt_idx,
+                                window             = window,
+                            )
+                        nn_t = time.perf_counter() - _t0
+                        n_inter = len(ui_idx)
+
+                        nn_results[nn_key] = {
+                            "vol_dice"        : nn_out["vol_dice"],
+                            "window_dice"     : nn_out["window_dice"],
+                            "time_s"          : nn_t,
+                            "num_interactions": n_inter,
+                        }
+
+                        if verbose:
+                            label = (
+                                "nn_baseline"
+                                if nn_key == "baseline"
+                                else f"nn+{nn_key}"
+                            )
+                            print(
+                                f"      [{label:<16}]  "
+                                f"vol={nn_out['vol_dice']:.3f}  "
+                                f"win={nn_out['window_dice']:.3f}  "
+                                f"({nn_t:.1f}s)  n_inter={n_inter}"
+                            )
 
                     record = _make_run_record(
                         volume_id         = volume_id,
@@ -626,30 +622,26 @@ def run_benchmark(
                         modality          = vol_mod,
                         p_unet_model_name = Path(p_unet_model).name,
                         per_mode_results  = per_mode_results,
-                        nn_vol_dice       = nn_out["vol_dice"],
-                        nn_window_dice    = nn_out["window_dice"],
-                        nn_time_s         = nn_time_s,
+                        nn_results        = nn_results,
                     )
 
                     if return_predictions:
                         record["initial_prompt_3d"] = initial_prompt_3d
                         record["img_3d"]            = img_3d
                         record["seg_3d_binary"]     = seg_3d_binary
-                        record["nn_pred_vol"]       = nn_out.get("result_volume")
 
                     all_records.append(record)
 
                 except Exception as e:
                     import traceback
-                    print(f"  ERROR on run {run_idx}: {e}")
+                    print(f"  ERROR run {run_idx}: {e}")
                     traceback.print_exc()
                     continue
 
-    # --- Save results ---
+    # --- Save ----------------------------------------------------------------
     if output_dir and all_records:
-        out_dir = _PROJECT_ROOT / output_dir
+        out_dir    = _PROJECT_ROOT / output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-
         timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_name = Path(p_unet_model).stem
         modes_tag  = "_".join(modes)
@@ -659,14 +651,14 @@ def run_benchmark(
 
         with open(pkl_path, "wb") as f:
             pickle.dump(all_records, f)
-        print(f"\nFull results saved → {pkl_path}")
+        print(f"\nFull results → {pkl_path}")
 
         summary = _compute_summary(all_records)
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
-        print(f"Summary saved       → {json_path}")
-
+        print(f"Summary      → {json_path}")
         _print_summary(summary)
+
     elif all_records:
         _print_summary(_compute_summary(all_records))
     else:
@@ -680,128 +672,111 @@ def run_benchmark(
 # ---------------------------------------------------------------------------
 
 def _print_summary(summary: dict):
-    def _fmt(stats: Optional[dict]) -> str:
-        if not stats:
+    def _f(s):
+        if not s:
             return "N/A"
         return (
-            f"{stats['mean']:.3f} ± {stats['std']:.3f}  "
-            f"[{stats['min']:.3f} – {stats['max']:.3f}]  "
-            f"median={stats['median']:.3f}  n={stats['n']}"
+            f"{s['mean']:.3f} ± {s['std']:.3f}  "
+            f"[{s['min']:.3f}–{s['max']:.3f}]  "
+            f"med={s['median']:.3f}  n={s['n']}"
         )
 
-    modes = summary.get("modes_evaluated", [])
+    modes   = summary.get("modes_evaluated", [])
+    nn_keys = sorted(summary.get("nn_results", {}).keys())
 
-    print(f"\n{'='*72}")
-    print(f"  BENCHMARK SUMMARY   n_runs={summary.get('n_runs', '?')}")
-    print(f"  Modes: {modes}")
-    print(f"{'='*72}")
+    print(f"\n{'='*74}")
+    print(f"  BENCHMARK SUMMARY   n_runs={summary.get('n_runs','?')}")
+    print(f"  P-UNet modes : {modes}")
+    print(f"  nn keys      : {nn_keys}")
+    print(f"{'='*74}")
 
     for mode in modes:
-        m_stats = summary.get("per_mode", {}).get(mode, {})
-        ifl     = m_stats.get("num_user_interacts")
-        print(f"\n  Prompt-UNet [{mode}]")
-        print(f"    Volumetric Dice : {_fmt(m_stats.get('vol_dice'))}")
-        print(f"    Window Dice     : {_fmt(m_stats.get('window_dice'))}")
-        print(f"    Inference time  : {_fmt(m_stats.get('time_s'))}")
+        m = summary.get("per_mode", {}).get(mode, {})
+        ifl = m.get("num_user_interacts")
+        print(f"\n  P-UNet [{mode}]")
+        print(f"    Vol  Dice  : {_f(m.get('vol_dice'))}")
+        print(f"    Win  Dice  : {_f(m.get('window_dice'))}")
+        print(f"    Time       : {_f(m.get('time_s'))}")
         if ifl:
-            print(f"    User Interacts  : {_fmt(ifl)}")
+            print(f"    IFL interacts: {_f(ifl)}")
 
-    nn = summary.get("nn", {})
-    print(f"\n  nnInteractive  (initial prompt only)")
-    print(f"    Volumetric Dice : {_fmt(nn.get('vol_dice'))}")
-    print(f"    Window Dice     : {_fmt(nn.get('window_dice'))}")
-    print(f"    Inference time  : {_fmt(nn.get('time_s'))}")
-    print(f"{'='*72}\n")
+    for nn_key in nn_keys:
+        m = summary.get("nn_results", {}).get(nn_key, {})
+        n_i = m.get("num_interactions", {})
+        label = "nnInteractive [baseline]" if nn_key == "baseline" else f"nnInteractive [+{nn_key}]"
+        print(f"\n  {label}")
+        print(f"    Vol  Dice  : {_f(m.get('vol_dice'))}")
+        print(f"    Win  Dice  : {_f(m.get('window_dice'))}")
+        print(f"    Time       : {_f(m.get('time_s'))}")
+        if n_i:
+            print(f"    # interactions: {_f(n_i)}")
 
-    # Per-dataset quick summary
+    # --- per-dataset quick table ---
     per_ds = summary.get("per_dataset", {})
     if per_ds:
-        print(f"  Per-dataset overview")
-        print(f"  {'Dataset':<30} {'Mode':<12} {'Vol Dice':>10}  {'Win Dice':>10}  {'Time':>8}")
-        print(f"  {'-'*66}")
-        for ds, ds_data in per_ds.items():
+        W = 68
+        print(f"\n  {'='*W}")
+        print(f"  {'Dataset':<28} {'Model':<22} {'Vol Dice':>10}  {'Win Dice':>10}  {'Time':>7}")
+        print(f"  {'-'*W}")
+        for ds, ddata in per_ds.items():
             for mode in modes:
-                m = ds_data.get("per_mode", {}).get(mode, {})
+                m  = ddata.get("per_mode", {}).get(mode, {})
                 vd = m.get("vol_dice", {})
                 wd = m.get("window_dice", {})
                 ts = m.get("time_s", {})
                 print(
-                    f"  {ds:<30} [{mode:<10}]  "
-                    f"{vd.get('mean', float('nan')):.3f}±{vd.get('std', float('nan')):.3f}  "
-                    f"{wd.get('mean', float('nan')):.3f}±{wd.get('std', float('nan')):.3f}  "
-                    f"{ts.get('mean', float('nan')):.1f}s"
+                    f"  {ds:<28} [P-UNet {mode:<12}]  "
+                    f"{vd.get('mean',float('nan')):.3f}±{vd.get('std',float('nan')):.3f}  "
+                    f"{wd.get('mean',float('nan')):.3f}±{wd.get('std',float('nan')):.3f}  "
+                    f"{ts.get('mean',float('nan')):.1f}s"
                 )
-            nn_m = ds_data.get("nn", {})
-            vd = nn_m.get("vol_dice", {})
-            wd = nn_m.get("window_dice", {})
-            ts = nn_m.get("time_s", {})
-            print(
-                f"  {ds:<30} [{'nnInteract':<10}]  "
-                f"{vd.get('mean', float('nan')):.3f}±{vd.get('std', float('nan')):.3f}  "
-                f"{wd.get('mean', float('nan')):.3f}±{wd.get('std', float('nan')):.3f}  "
-                f"{ts.get('mean', float('nan')):.1f}s"
-            )
-            print(f"  {'-'*66}")
+            for nn_key in nn_keys:
+                m  = ddata.get("nn_results", {}).get(nn_key, {})
+                vd = m.get("vol_dice", {})
+                wd = m.get("window_dice", {})
+                ts = m.get("time_s", {})
+                label = "nn_baseline" if nn_key == "baseline" else f"nn+{nn_key}"
+                print(
+                    f"  {ds:<28} [{label:<20}]  "
+                    f"{vd.get('mean',float('nan')):.3f}±{vd.get('std',float('nan')):.3f}  "
+                    f"{wd.get('mean',float('nan')):.3f}±{wd.get('std',float('nan')):.3f}  "
+                    f"{ts.get('mean',float('nan')):.1f}s"
+                )
+            print(f"  {'-'*W}")
         print()
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description=(
-            "3-D benchmark: Prompt-UNet (multi-mode, same prompt) vs nnInteractive."
-        )
+    ap = argparse.ArgumentParser(
+        description="3-D benchmark: multi-mode Prompt U-Net vs nnInteractive (paired IFL)."
     )
-    parser.add_argument(
-        "--npz_paths", nargs="+", required=True,
-        help="One or more .npz file paths (ds_handler format).",
-    )
-    parser.add_argument(
-        "--p_unet_model", required=True,
-        help="Path to a saved .keras Prompt-UNet model.",
-    )
-    parser.add_argument(
-        "--nn_model_dir", default=None,
-        help="Path to nnInteractive weights directory (auto-download if omitted).",
-    )
-    parser.add_argument("--runs_per_vol", type=int, default=5)
-    parser.add_argument(
+    ap.add_argument("--npz_paths",      nargs="+", required=True)
+    ap.add_argument("--p_unet_model",   required=True)
+    ap.add_argument("--nn_model_dir",   default=None)
+    ap.add_argument("--runs_per_vol",   type=int,   default=5)
+    ap.add_argument(
         "--modes", nargs="+", default=["ifl"],
-        help=(
-            "One or more mode strings evaluated on the same initial prompt: "
-            "'ssf', 'ifl', 'ifl_ssf', 'none'.  Example: --modes ssf ifl ifl_ssf"
-        ),
+        help="Mode strings: 'ssf', 'ifl', 'ifl_ssf', 'none'.  Example: --modes ssf ifl ifl_ssf",
     )
-    parser.add_argument(
-        "--modality", default=None, choices=["CT", "MRI"],
-        help="Fallback modality if not stored in .npz.",
-    )
-    parser.add_argument("--output_threshold", type=float, default=0.5)
-    parser.add_argument(
+    ap.add_argument("--modality",           default=None, choices=["CT", "MRI"])
+    ap.add_argument("--output_threshold",   type=float, default=0.5)
+    ap.add_argument(
         "--ssf_strategy", default="relative_ssim",
         choices=["none", "relative_ssim", "mask_dice", "confidence"],
-        help="SSF trigger strategy used by SSF-enabled modes.",
     )
-    parser.add_argument(
-        "--ssf_threshold", type=float, default=0.40,
-        help="Threshold parameter for the chosen SSF strategy.",
-    )
-    parser.add_argument("--buffer_size",       type=int,   default=4)
-    parser.add_argument("--gt_dice_threshold", type=float, default=0.65)
-    parser.add_argument("--batch_size",        type=int,   default=3)
-    parser.add_argument("--window",            type=int,   default=10)
-    parser.add_argument("--min_prompt_pixels", type=int,   default=50)
-    parser.add_argument(
-        "--output_dir",
-        default="evaluation/benchmark_nninteractive/results",
-        help="Directory to save pkl + json results.",
-    )
-    parser.add_argument("--nn_device", default="cuda:0")
-
-    args = parser.parse_args()
+    ap.add_argument("--ssf_threshold",      type=float, default=0.40)
+    ap.add_argument("--buffer_size",        type=int,   default=4)
+    ap.add_argument("--gt_dice_threshold",  type=float, default=0.65)
+    ap.add_argument("--batch_size",         type=int,   default=3)
+    ap.add_argument("--window",             type=int,   default=10)
+    ap.add_argument("--min_prompt_pixels",  type=int,   default=50)
+    ap.add_argument("--output_dir",         default="evaluation/benchmark_nninteractive/results")
+    ap.add_argument("--nn_device",          default="cuda:0")
+    args = ap.parse_args()
 
     _ssf_map = {
         "none"         : None,
