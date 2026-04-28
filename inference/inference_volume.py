@@ -680,8 +680,26 @@ class InteractiveFeedbackLoop(VolumeInference):
 
     def __init__(self, *args, gt_dice_threshold: float = 0.65, **kwargs):
         super().__init__(*args, **kwargs)
-        self.gt_dice_threshold  = gt_dice_threshold
-        self._ifl_user_interacts: List[int] = []
+        self.gt_dice_threshold   = gt_dice_threshold
+        self._ifl_user_interacts : List[int] = []
+        self._ifl_enabled        : bool = True   # can be toggled without reload
+
+    def set_ifl_enabled(self, enabled: bool) -> None:
+        """
+        Enable or disable Interactive Feedback Loop correction at runtime.
+
+        When ``enabled=False`` the instance behaves identically to plain
+        :class:`VolumeInference`, applying only SSF (if a strategy is set).
+        This lets one loaded model be benchmarked under multiple mode
+        configurations without reloading weights.
+
+        Parameters
+        ----------
+        enabled : bool
+            ``True``  — IFL correction active (default).
+            ``False`` — IFL correction disabled; GT substitution never fires.
+        """
+        self._ifl_enabled = enabled
 
     # Override the IFL hook — called per-slice inside VolumeInference.run()
     def _maybe_ifl_update(
@@ -698,7 +716,12 @@ class InteractiveFeedbackLoop(VolumeInference):
           • Update prompt p for subsequent slices.
           • Signal rollback of any further slices in the current batch
             (they were predicted with the old, now-invalidated prompt).
+
+        When IFL is disabled (set_ifl_enabled(False)) this is a no-op,
+        matching the base VolumeInference behaviour.
         """
+        if not self._ifl_enabled:
+            return pred, p, False   # disabled: no GT substitution
         current_dice = float(dice_score_tf(y_gt, pred).numpy())
         if current_dice < self.gt_dice_threshold:
             self._ifl_user_interacts.append(vol_i)
@@ -736,9 +759,15 @@ class InteractiveFeedbackLoop(VolumeInference):
             prompt_axis, prompt_idx, modality=modality,
         )
 
-        # Patch IFL-specific fields onto the result
-        result.num_user_interacts = len(self._ifl_user_interacts) + 1  # +1 for initial
-        result.user_interacts_idx = list(self._ifl_user_interacts)
+        # Patch IFL-specific fields onto the result.
+        # When IFL is disabled, report None / [] so callers can distinguish
+        # SSF-only runs from IFL runs.
+        if self._ifl_enabled:
+            result.num_user_interacts = len(self._ifl_user_interacts) + 1  # +1 for initial
+            result.user_interacts_idx = list(self._ifl_user_interacts)
+        else:
+            result.num_user_interacts = None
+            result.user_interacts_idx = []
         return result
 
 
