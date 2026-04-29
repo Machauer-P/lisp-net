@@ -41,7 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from data.test_data.ds_handler_2d import load_2d_npz_bundle
 from utils.metrics import dice_numpy
 from evaluation.benchmark_models.UniverSeg.universeg import universeg as load_universeg_model
-from inference.inference import PromptUNetPredictor
+from inference.predictor import PromptUNetPredictor
 
 
 # ---------------------------------------------------------------------------
