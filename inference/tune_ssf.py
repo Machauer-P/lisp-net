@@ -168,7 +168,7 @@ def tune_ssf():
                 # Generate a random prompt (same across all strategies for fair comparison)
                 try:
                     _, initial_prompt_2d_seg, (prompt_axis, prompt_idx), selected_roi = \
-                        generate_initial_prompt(seg_3d_labels, min_pixels=50)
+                        generate_initial_prompt(seg_3d_labels)
                 except Exception as exc:
                     print(f"    Run {run_idx+1}: skipping — {exc}")
                     continue

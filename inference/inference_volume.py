@@ -783,50 +783,62 @@ class InteractiveFeedbackLoop(VolumeInference):
 
 def generate_initial_prompt(
     seg_3d: np.ndarray,
-    min_pixels: int = 50,
     visualize: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int], int]:
     """
     Select a random ROI from a multi-label 3-D segmentation and generate a
-    2-D prompt mask on a randomly chosen slice.
+    2-D prompt mask on a slice where the ROI is largest (mimicking human interaction).
 
     Parameters
     ----------
     seg_3d      : np.ndarray, integer labels (0 = background).
-    min_pixels  : int — minimum foreground pixels for an ROI to be eligible.
     visualize   : bool — show the selected prompt mask (requires matplotlib).
 
     Returns
     -------
     initial_prompt_3d   : np.ndarray, shape == seg_3d.shape, float32.
-        Zeros everywhere except the selected 2-D slice (binary ROI mask).
     initial_prompt_2d   : np.ndarray, shape (H, W), float32.
     (axis, slice_idx)   : Tuple[int, int].
     selected_roi        : int — the chosen label value.
     """
     seg_3d = np.asarray(seg_3d)
 
-    def _nonempty_slices(arr, axis):
-        return [i for i in range(arr.shape[axis]) if np.any(np.take(arr, i, axis=axis))]
+    # 1. Randomly pick axis
+    axis = random.choice([0, 1, 2])
+    
+    # 2. Find eligible ROIs across the whole volume
+    labels = np.unique(seg_3d)
+    labels = labels[labels != 0]
+    
+    eligible = []
+    roi_to_slice_areas = {}
+    
+    sum_axes = tuple(a for a in [0, 1, 2] if a != axis)
+    
+    for lbl in labels:
+        mask = (seg_3d == lbl)
+        areas = mask.sum(axis=sum_axes)
+        eligible.append(lbl)
+        roi_to_slice_areas[lbl] = areas
 
-    axis       = random.choice([0, 1, 2])
-    valid_idxs = _nonempty_slices(seg_3d, axis)
-    if not valid_idxs:
-        raise ValueError("seg_3d has no non-empty slices.")
+    if not eligible:
+        raise ValueError("Could not find any foreground ROI in the segmentation mask.")
 
-    for _attempt in range(50):
-        rand_i     = random.choice(valid_idxs)
-        rand_slice = np.take(seg_3d, rand_i, axis=axis)
-        labels     = np.unique(rand_slice)
-        labels     = labels[labels != 0]
-        eligible   = [lbl for lbl in labels if np.sum(rand_slice == lbl) >= min_pixels]
-        if eligible:
-            selected_roi = random.choice(eligible)
-            break
-    else:
-        raise ValueError("Could not find an eligible ROI after 50 attempts.")
+    # 3. Pick the ROI fairly
+    selected_roi = random.choice(eligible)
+    areas = roi_to_slice_areas[selected_roi]
 
-    roi_mask          = (rand_slice == selected_roi).astype(np.float32)
+    # 4. Mimic human interaction: Pick a slice from the "thickest" parts of the organ
+    # We sample randomly from any slice that has at least 80% of the maximum cross-sectional area.
+    max_area = areas.max()
+    threshold = max_area * 0.8
+    valid_slices = np.where(areas >= threshold)[0]
+    rand_i = random.choice(valid_slices)
+    
+    # 5. Extract the chosen prompt
+    rand_slice = np.take(seg_3d, rand_i, axis=axis)
+    roi_mask = (rand_slice == selected_roi).astype(np.float32)
+
     initial_prompt_3d = np.zeros_like(seg_3d, dtype=np.float32)
     if axis == 0:
         initial_prompt_3d[rand_i, :, :]  = roi_mask
@@ -840,7 +852,7 @@ def generate_initial_prompt(
         plt.imshow(roi_mask)
         plt.title(
             f"ROI {selected_roi} | Axis {axis}, Slice {rand_i} | "
-            f"{int(np.sum(roi_mask))} px"
+            f"{int(np.sum(roi_mask))} px (Max was {int(max_area)})"
         )
         plt.show()
 

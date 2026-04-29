@@ -354,7 +354,6 @@ def run_benchmark(
     buffer_size: int = 4,
     gt_dice_threshold: float = 0.65,
     window: int = 10,
-    min_prompt_pixels: int = 50,
     max_volumes: Optional[int] = None,
     return_predictions: bool = False,
     output_dir: Optional[str] = None,
@@ -381,7 +380,6 @@ def run_benchmark(
     buffer_size     : int — SSF rolling buffer depth.
     gt_dice_threshold : float — IFL Dice threshold for GT substitution.
     window          : int — half-width for windowed Dice.
-    min_prompt_pixels : int — minimum foreground pixels for a valid prompt.
     max_volumes     : int or None — cap on total evaluated volumes.
     return_predictions : bool — embed arrays in records (high RAM).
     output_dir      : str or None — dir for pkl + json outputs.
@@ -513,7 +511,7 @@ def run_benchmark(
                         initial_prompt_2d_seg,
                         (prompt_axis, prompt_idx),
                         selected_roi,
-                    ) = generate_initial_prompt(seg_3d_labels, min_pixels=min_prompt_pixels)
+                    ) = generate_initial_prompt(seg_3d_labels)
 
                     seg_3d_binary = (seg_3d_labels == selected_roi).astype(np.float32)
 
@@ -794,7 +792,6 @@ if __name__ == "__main__":
     ap.add_argument("--gt_dice_threshold",  type=float, default=0.65)
     ap.add_argument("--batch_size",         type=int,   default=3)
     ap.add_argument("--window",             type=int,   default=10)
-    ap.add_argument("--min_prompt_pixels",  type=int,   default=50)
     ap.add_argument("--output_dir",         default="evaluation/benchmark_nninteractive/results")
     ap.add_argument("--nn_device",          default="cuda:0")
     args = ap.parse_args()
