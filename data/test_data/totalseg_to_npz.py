@@ -3,7 +3,7 @@ totalseg_to_npz.py
 ==================
 TotalSegmentator MRI dataset → .npz converter.
 
-Dataset: TotalSegmentator MRI — 298 (v1.0.0) / 616 (v2.0.0) whole-body MRI scans
+Dataset: TotalSegmentator MRI — 298 (v1.0.0) whole-body MRI scans
          with 56 individual organ segmentations per subject.
 Paper:   "TotalSegmentator MRI: Robust Sequence-independent Segmentation of
           Multiple Anatomic Structures in MRI" (arXiv 2405.19492)
