@@ -179,7 +179,7 @@ class PromptUNetPredictor:
         # ----------------------------------------------------------------
         # Branch: tiling path  (native arbitrary resolution)
         # ----------------------------------------------------------------
-        return self._predict_tiled(x, p, threshold)
+        return self._predict_tiled(x, p, threshold, batch_size=batch_size)
 
     # ------------------------------------------------------------------
     # Internal: 128 × 128 fast path (unchanged from original)

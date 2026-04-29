@@ -200,7 +200,7 @@ class EvalPipeline2D:
     # Pair evaluation
     # ------------------------------------------------------------------
 
-    def evaluate_pair(self, pair, model, model_name, threshold=0.5):
+    def evaluate_pair(self, pair, model, model_name, batch_size=32, threshold=0.5):
         """Evaluate one NPZ bundle against the chosen model.
 
         Returns
@@ -233,7 +233,7 @@ class EvalPipeline2D:
                 x_i = np.expand_dims(x_arr[i], axis=0) # (1, H, W, 1)
                 p_i = np.expand_dims(p_arr[i], axis=0) # (1, H, W, 2)
                 
-                preds_pn = model.predict(x_i, p_i, batch_size=1, threshold=threshold)
+                preds_pn = model.predict(x_i, p_i, batch_size=batch_size, threshold=threshold)
                 
                 dice_p = dice_numpy(y_arr[i].squeeze(), preds_pn[0].squeeze())
                 dices.append(dice_p)
@@ -290,7 +290,7 @@ class EvalPipeline2D:
     # Full pipeline
     # ------------------------------------------------------------------
 
-    def run_full_evaluation(self, data_path, model_name, p_unet_version='313', output_file=None):
+    def run_full_evaluation(self, data_path, model_name, p_unet_version='315', batch_size=32, output_file=None):
         """Discover all NPZ bundles, run inference, and print results.
 
         Parameters
@@ -324,7 +324,7 @@ class EvalPipeline2D:
 
         results = []
         for pair in tqdm(pairs, desc=f"Evaluating {model_name}"):
-            dice_mean, time_taken, task_id = self.evaluate_pair(pair, model, model_name)
+            dice_mean, time_taken, task_id = self.evaluate_pair(pair, model, model_name, batch_size=batch_size)
             results.append({
                 'index': pair['index'],
                 'name':  pair['name'],
@@ -378,6 +378,10 @@ if __name__ == "__main__":
         help="Prompt-UNet model version suffix.",
     )
     parser.add_argument(
+        "--batch_size", type=int, default=32,
+        help="Batch size for Prompt-UNet tiled inference path.",
+    )
+    parser.add_argument(
         "--output", type=str,
         default=None,
         help="Path to save pickled results. Defaults to evaluation/benchmark_universeg/eval_results_<model>.pkl",
@@ -388,4 +392,4 @@ if __name__ == "__main__":
         args.output = f"evaluation/benchmark_universeg/eval_results_{args.model}.pkl"
 
     pipeline = EvalPipeline2D()
-    pipeline.run_full_evaluation(args.data_path, args.model, args.p_unet_version, args.output)
+    pipeline.run_full_evaluation(args.data_path, args.model, args.p_unet_version, args.batch_size, args.output)
