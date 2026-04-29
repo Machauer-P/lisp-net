@@ -258,7 +258,7 @@ class ConfidenceDropStrategy(BaseSSFStrategy):
 
     def __init__(
         self,
-        drop_fraction: float = 0.30,
+        drop_fraction: float = 0.05,
         min_foreground_fraction: float = 0.005,
     ):
         self.drop_fraction          = drop_fraction
