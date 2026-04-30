@@ -2,8 +2,22 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies.
 
+## [v331] - Large Offset + TopCoW Vessel Data
+*Implementation: `prompt_unet_313.py`, `loss.py`, `p_unet_331.ipynb`*
+
+**Hyperparameters**
+- **Increased Offset:** The slice distance offset was increased from 12 (v330) to 20, matching the v317 configuration, to force the model to handle larger inter-slice gaps and improve robustness during propagation.
+
+**Data Additions**
+- **TopCoW MR:** Added `TopCoW_MR.npz` (18 patients) to the training pool — cerebrovascular MRI with Circle-of-Willis annotations.
+- **TopCoW CT:** Added `TopCoW_CT.npz` (18 patients) to the training pool — cerebrovascular CT with Circle-of-Willis annotations.
+- Total patient count increases from 172 → 208.
+
+**Identical to v330 otherwise**
+- DiceBCE loss, 10,000-point training buffer, 20-epoch refresh cadence, `WarmupFlatCosineDecay` LR schedule, and v313 architecture (Float32 + SE Attention) remain unchanged.
+
 ## [v330] - nnUNet-Inspired Loss & Scaled Data
-*Implementation: `loss.py`, `p_unet_330.ipynb`*
+*Implementation: `prompt_unet_313.py`, `loss.py`, `p_unet_330.ipynb`*
 
 **Objective Function Overhaul**
 - **Batch Dice + BCE Loss:** Replaced standard Binary Cross-Entropy with a combined `DiceBCELoss`. This implements a "Batch Soft Dice" which computes the Dice coefficient globally across the entire flattened batch. This provides much more stable gradients than per-sample Dice.
@@ -13,8 +27,15 @@ This document tracks the evolution of the Prompt U-Net segmentation model, from 
 - **Increased Refresh Frequency:** Increased the refresh rate (`new_ds`) from every 50 epochs to every 20 epochs to reduce the "sawtooth" overfitting pattern observed in validation metrics.
 - **Base Model:** Inherited the architecture and pipeline from v315 (Float32 + SE Attention + BraTS datasets), as it was identified as the best performing stable baseline.
 
+## [v317] - Large Offset Variant
+*Implementation: `prompt_unet_313.py`, `p_unet_317.ipynb`*
+
+**Hyperparameters**
+- **Increased Offset:** The slice distance offset was increased from 12 (v315) to 20.
+- **Identical to v315 otherwise:** Uses the same BraTS-augmented data pipeline and the v313 architecture (Float32 + SE Attention).
+
 ## [v316] - Large Offset Variant
-*Implementation: `p_unet_316.ipynb`*
+*Implementation: `prompt_unet_313.py`, `p_unet_316.ipynb`*
 
 **Hyperparameters**
 - **Increased Offset:** The slice distance offset was increased from 12 (v315) to 16.
