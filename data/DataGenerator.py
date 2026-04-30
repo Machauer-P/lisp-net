@@ -765,7 +765,7 @@ class DataGenerator:
 
     def get_data_points_from_one_task_numpy(self, max_data_points=116, offset=5,
                                             dimensions=None,
-                                            extraction_mode='crop',
+                                            extraction_mode='native',
                                             return_task=False):
         """
         Generate data points that ALL belong to the SAME segmentation task
@@ -784,7 +784,9 @@ class DataGenerator:
 
         Parameters
         ----------
-        extraction_mode : 'crop' (default) or 'fullslice'
+        extraction_mode : 'native' (recommended), 'crop' or 'fullslice'
+            'native'    → keeps exact native slice shape matching the source volume
+                          (_extract_native_2d). Returns variable-sized arrays.
             'crop'      → label-guided 128–256 px patch crop (_extract_patch_2d).
                           In-plane dimensions must be >= 128; smaller volumes
                           are skipped automatically.
@@ -854,8 +856,8 @@ class DataGenerator:
                     break
 
                 current_dict = self.dataloader.dataset[pid]
-                modality_str = current_dict.get('modality', 'UNKNOWN')
-                is_mri = 0.0 if modality_str == 'CT' else 1.0
+                modality_str = str(current_dict.get('modality', 'UNKNOWN')).lower()
+                is_mri = 0.0 if 'ct' in modality_str else 1.0
 
                 y_raw = current_dict['segmentations']
                 if isinstance(y_raw, list) and len(y_raw) == 1:
