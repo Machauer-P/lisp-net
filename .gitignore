@@ -1,31 +1,26 @@
 # Python cache
 __pycache__/
 
-# Test Data
-data/test_data/*/
-
-# Research
+# Folders
 research/
-
-# Augm test results
 utils/augmentation_results/
+data/test_data/*/
+data/train_data/*/
+deployment/*/ 
+.ipynb_checkpoints/
+.vscode/
 
 # Files
 training/p_unet_21_extracted_2.py
-*.pdf
 
-# Large files
+# File Types
 *.zip
 *.pkl
 *.npz
 *.keras
 *.nii.gz
-
-# Subfolder for deployment contain the tfjs models
-deployment/*/ 
-
-# Checkpoints
-.ipynb_checkpoints/
+*.yml
+*.pdf
 
 # Virtual environment
 .venv/
@@ -34,6 +29,3 @@ deployment/*/
 training/mlruns/
 mlflow.db
 *.yaml
-
-# Optional: IDE/editor stuff
-.vscode/
