@@ -33,7 +33,7 @@ def universal_normalization(volume, modality="CT"):
     """
     volume = np.asarray(volume, dtype=np.float32)
 
-    if modality == "CT":
+    if "ct" in str(modality).lower():
         # 1. Clip to broad body window — removes metal artifacts and air outliers.
         volume = np.clip(volume, -1000.0, 1000.0)
 
@@ -104,7 +104,7 @@ def universeg_normalization(volume, modality="CT"):
     """
     volume = np.asarray(volume, dtype=np.float32)
 
-    if modality == "CT":
+    if "ct" in str(modality).lower():
         v_min, v_max = -500.0, 1000.0
         volume = np.clip(volume, v_min, v_max)
     else:  # MRI / Other

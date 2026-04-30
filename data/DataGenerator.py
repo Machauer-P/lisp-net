@@ -632,8 +632,8 @@ class DataGenerator:
 
             for pid in self.dataloader.current_ids:
                 current_dict = self.dataloader.dataset[pid]
-                modality_str = current_dict.get('modality', 'UNKNOWN')
-                is_mri       = 0.0 if modality_str == 'CT' else 1.0
+                modality_str = str(current_dict.get('modality', 'UNKNOWN')).lower()
+                is_mri = 0.0 if 'ct' in modality_str else 1.0
 
                 x, y = self._prepare_volume(current_dict, pid=pid)
 
