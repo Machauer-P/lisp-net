@@ -6,7 +6,8 @@ research/
 utils/augmentation_results/
 data/test_data/*/
 data/train_data/*/
-deployment/*/ 
+deployment/*/
+evaluation/eval_prompt_unet 
 .ipynb_checkpoints/
 .vscode/
 
