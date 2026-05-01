@@ -27,6 +27,25 @@ This document tracks the evolution of the Prompt U-Net segmentation model, from 
 - **Increased Refresh Frequency:** Increased the refresh rate (`new_ds`) from every 50 epochs to every 20 epochs to reduce the "sawtooth" overfitting pattern observed in validation metrics.
 - **Base Model:** Inherited the architecture and pipeline from v315 (Float32 + SE Attention + BraTS datasets), as it was identified as the best performing stable baseline.
 
+## [v319] - v316 Variant with TopCoW Vessel Data
+*Implementation: `prompt_unet_313.py`, `p_unet_319.ipynb`*
+
+**Data Additions**
+- **TopCoW MR:** Added `TopCoW_MR.npz` (18 patients) to the training pool.
+- **TopCoW CT:** Added `TopCoW_CT.npz` (18 patients) to the training pool.
+
+**Identical to v316 otherwise**
+- Uses the same offset of 16, BraTS-augmented data pipeline, and the v313 architecture (Float32 + SE Attention).
+
+## [v318] - v316 Variant with nnUNet-Inspired Loss
+*Implementation: `prompt_unet_313.py`, `loss.py`, `p_unet_318.ipynb`*
+
+**Objective Function**
+- **Batch Dice + BCE Loss:** Replaced standard Binary Cross-Entropy with a combined `DiceBCELoss` (from v330).
+
+**Identical to v316 otherwise**
+- Uses the same offset of 16, BraTS-augmented data pipeline, and the v313 architecture (Float32 + SE Attention).
+
 ## [v317] - Large Offset Variant
 *Implementation: `prompt_unet_313.py`, `p_unet_317.ipynb`*
 
