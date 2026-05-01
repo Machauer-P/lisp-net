@@ -662,8 +662,12 @@ def run_benchmark(
         model_name = Path(p_unet_model).stem
         modes_tag  = "_".join(modes)
 
-        pkl_path  = out_dir / f"results_{model_name}_{modes_tag}_{timestamp}.pkl"
-        json_path = out_dir / f"results_{model_name}_{modes_tag}_{timestamp}_summary.json"
+        ssf_tag = "no_ssf"
+        if ssf_strategy is not None:
+            ssf_tag = ssf_strategy.name.replace("(", "_").replace(")", "").replace("=", "")
+
+        pkl_path  = out_dir / f"results_{model_name}_{modes_tag}_{ssf_tag}_{timestamp}.pkl"
+        json_path = out_dir / f"results_{model_name}_{modes_tag}_{ssf_tag}_{timestamp}_summary.json"
 
         with open(pkl_path, "wb") as f:
             pickle.dump(all_records, f)
