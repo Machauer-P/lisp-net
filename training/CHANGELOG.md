@@ -2,8 +2,35 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies.
 
+## [v332] - **FINAL MODEL** — v316 + TopCoW + Scaled Training Buffer
+*Implementation: `prompt_unet_313.py`, `optimizer.py`, `p_unet_332.ipynb`, `train_332.py`*
+
+This is the benchmark-selected final model, combining the best individual choices from prior ablations.
+
+**Architecture & Training**
+- **Base architecture:** `prompt_unet_313.py` (Float32 + SE Attention) — same as v316.
+- **Offset:** 16 (same as v316; v317/v331's offset 20 did not outperform in benchmarks).
+- **Loss function:** Plain `binary_crossentropy` — reverted from the experimental `DiceBCELoss` (v318/v330/v331). The v316 baseline consistently outperformed DiceBCE variants in nnInteractive comparisons.
+- **LR schedule:** `WarmupFlatCosineDecay` via `optimizer.py` (50 ep warmup → 1500 ep flat → cosine decay to epoch 4000).
+
+**Data**
+- **All v319 datasets:** NAKO (61) + TotalSegmentator (45) + MSD (40) + BraTS-GLI (20) + BraTS-MEN-RT (6) + TopCoW MR (18) + TopCoW CT (18) = **208 patients**.
+
+**Training Buffer (from v330)**
+- **Buffer size:** 10,000 data points per refresh (up from v316's 3,500).
+- **Refresh cadence:** every **30 epochs** (`new_ds = 30`), slightly less aggressive than v330/v331's 20-epoch cadence to reduce overhead while still preventing overfitting.
+
+**Logging**
+- MLflow experiment: `p_unet_332` (same infrastructure as all prior versions).
+- Checkpoint saved every 8 epochs as `p_unet_332.keras`.
+
+**Deprecations / Cleanup**
+- `loss.py` (containing the experimental `DiceBCELoss`) has been **deleted**. The class has been injected inline into the notebooks that use it (v318, v330, v331) so those legacy experiments remain fully reproducible.
+
+---
+
 ## [v331] - Large Offset + TopCoW Vessel Data
-*Implementation: `prompt_unet_313.py`, `loss.py`, `p_unet_331.ipynb`*
+*Implementation: `prompt_unet_313.py`, `p_unet_331.ipynb` (DiceBCELoss inlined — `loss.py` deleted)*
 
 **Hyperparameters**
 - **Increased Offset:** The slice distance offset was increased from 12 (v330) to 20, matching the v317 configuration, to force the model to handle larger inter-slice gaps and improve robustness during propagation.
@@ -17,7 +44,7 @@ This document tracks the evolution of the Prompt U-Net segmentation model, from 
 - DiceBCE loss, 10,000-point training buffer, 20-epoch refresh cadence, `WarmupFlatCosineDecay` LR schedule, and v313 architecture (Float32 + SE Attention) remain unchanged.
 
 ## [v330] - nnUNet-Inspired Loss & Scaled Data
-*Implementation: `prompt_unet_313.py`, `loss.py`, `p_unet_330.ipynb`*
+*Implementation: `prompt_unet_313.py`, `p_unet_330.ipynb` (DiceBCELoss inlined — `loss.py` deleted)*
 
 **Objective Function Overhaul**
 - **Batch Dice + BCE Loss:** Replaced standard Binary Cross-Entropy with a combined `DiceBCELoss`. This implements a "Batch Soft Dice" which computes the Dice coefficient globally across the entire flattened batch. This provides much more stable gradients than per-sample Dice.
@@ -38,7 +65,7 @@ This document tracks the evolution of the Prompt U-Net segmentation model, from 
 - Uses the same offset of 16, BraTS-augmented data pipeline, and the v313 architecture (Float32 + SE Attention).
 
 ## [v318] - v316 Variant with nnUNet-Inspired Loss
-*Implementation: `prompt_unet_313.py`, `loss.py`, `p_unet_318.ipynb`*
+*Implementation: `prompt_unet_313.py`, `p_unet_318.ipynb` (DiceBCELoss inlined — `loss.py` deleted)*
 
 **Objective Function**
 - **Batch Dice + BCE Loss:** Replaced standard Binary Cross-Entropy with a combined `DiceBCELoss` (from v330).
