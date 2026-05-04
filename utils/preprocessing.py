@@ -108,10 +108,20 @@ def universeg_normalization(volume, modality="CT"):
         v_min, v_max = -500.0, 1000.0
         volume = np.clip(volume, v_min, v_max)
     else:  # MRI / Other
-        v_min = float(np.percentile(volume, 0.5))
-        v_max = float(np.percentile(volume, 99.5))
+        non_zero_mask = volume > 0.0
+        non_zero_voxels = volume[non_zero_mask]
+        
+        # Fallback just in case the volume is entirely 0 or negative
+        if non_zero_voxels.size == 0:
+            non_zero_voxels = volume.reshape(-1)
+
+        v_min = float(np.percentile(non_zero_voxels, 0.5))
+        v_max = float(np.percentile(non_zero_voxels, 99.5))
+        
+        # Clip the whole volume using the foreground-derived percentiles
         volume = np.clip(volume, v_min, v_max)
 
+    # Paper: "We min-max normalize all resulting volumes to [0, 1]"
     return ((volume - v_min) / (v_max - v_min + 1e-8)).astype(np.float32)
 
 
