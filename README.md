@@ -33,18 +33,17 @@ To bridge the gap between research and clinical application, the model is highly
 
 ## 💡 Scientific Core Innovation & Features
 
-Prompt U-Net transforms static segmentation into an **interactive, context-aware process**. Unlike "black-box" models, it leverages **In-Context Learning** to adapt to unseen anatomical structures using minimal data, while outperforming important baseline models with significantly lower computational complexity and memory footprint.
+Prompt U-Net transforms static segmentation into an **interactive, context-aware process**. Unlike "black-box" models, it leverages **In-Context Learning** to adapt to unseen anatomical structures using minimal data, while outperforming UniverSeg and rivaling the performance of nnInteractive, all with significantly lower computational complexity and memory footprint.
 
 **Features:**
 - **Dual-Encoder Architecture:** Simultaneously processes a medical image and a 2D user-provided prompt, with a dedicated conditioning mechanism.
 - **In-Context Learning:** Enables rapid adaptation to new tasks without retraining.
 - **Self-Supervised Feedback (SSF):** Automatically ensures volumetric consistency. The model uses its own predictions from adjacent slices as internal "context" to refine the current segmentation without human intervention *(not yet in Browser Demo)*.
 - **Interactive Feedback (IF):** Enables "Human-in-the-loop" refinement. A clinician can provide a manual correction on a missegmented area, which is instantly used to update and improve future masks.
-- **Data Efficiency:** Outperforms established baselines with reduced data requirements.
+- **Data Efficiency:** Rivaling top-tier baselines like nnInteractive while requiring significantly less data.
 
 <br>
-<img src="docs/architecture_outdated.png" style="width: 60%; max-width: 600px;" alt="Prompt U-Net Architecture">
-<img src="docs/inference.png" style="width: 35%; max-width: 600px;" alt="Prompt U-Net Inference">
+<img src="docs/p_unet_architecture.png" style="width: 100%;" alt="Prompt U-Net Architecture">
 <br>
 
 ---
