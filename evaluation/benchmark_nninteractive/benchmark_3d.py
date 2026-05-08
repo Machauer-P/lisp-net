@@ -37,6 +37,8 @@ Record structure (one dict per (volume, run))
     "volume_id", "pid", "run_idx", "dataset_name", "modality",
     "p_unet_model", "prompt_axis", "prompt_idx", "selected_roi",
     "shape_original", "modes_evaluated",
+    "roi_slices",       # non-empty slices of the ROI along prompt_axis
+    "roi_voxels",       # total foreground voxel count of the selected ROI
 
     # per-mode Prompt-UNet results (nested dict, keyed by canonical mode name)
     "per_mode": {
@@ -199,6 +201,8 @@ def _make_run_record(
     p_unet_model_name: str,
     per_mode_results: Dict[str, dict],
     nn_results: Dict[str, dict],
+    roi_slices: int,
+    roi_voxels: int,
 ) -> dict:
     """Build one unified record for a (volume, run) pair.
 
@@ -219,6 +223,8 @@ def _make_run_record(
         "selected_roi"    : int(selected_roi),
         "shape_original"  : list(shape_original),
         "modes_evaluated" : list(modes_evaluated),
+        "roi_slices"      : roi_slices,
+        "roi_voxels"      : roi_voxels,
         "per_mode"        : per_mode_results,
         "nn_results"      : nn_results,
     }
@@ -515,6 +521,15 @@ def run_benchmark(
 
                     seg_3d_binary = (seg_3d_labels == selected_roi).astype(np.float32)
 
+                    # Count slices + voxels of the selected ROI along prompt_axis.
+                    # These are volume-level properties of the structure — the same
+                    # for every mode, so computed once here at the top of the run.
+                    roi_axis_sum = seg_3d_binary.any(
+                        axis=tuple(i for i in range(seg_3d_binary.ndim) if i != prompt_axis)
+                    )  # bool array of length = volume depth along prompt_axis
+                    _roi_slices = int(roi_axis_sum.sum())
+                    _roi_voxels = int(seg_3d_binary.sum())
+
                     # ----------------------------------------------------------
                     # P-UNet: all modes on the same prompt
                     # ----------------------------------------------------------
@@ -639,6 +654,8 @@ def run_benchmark(
                         p_unet_model_name = Path(p_unet_model).name,
                         per_mode_results  = per_mode_results,
                         nn_results        = nn_results,
+                        roi_slices        = _roi_slices,
+                        roi_voxels        = _roi_voxels,
                     )
 
                     if return_predictions:
