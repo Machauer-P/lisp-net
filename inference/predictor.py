@@ -220,67 +220,79 @@ class PromptUNetPredictor:
         batch_size: int = 32,
     ) -> np.ndarray:     # (B, H, W)
         """
-        Tiled inference for non-128 × 128 inputs.
+        Tiled inference for non-128x128 inputs.
 
-        Samples are processed sequentially to ensure each receives a
-        unique tile grid based on its specific prompt bounding box.
+        Uses a gather/mega-batch/scatter strategy so that tiles from
+        all slices are fused into a single stream of GPU forward passes,
+        even though each slice has a unique prompt and unique tile grid.
 
-        Tiles within each sample are batched (and chunked by ``batch_size``)
-        to maintain high GPU utilisation while staying within memory limits.
+        1. Gather  -- for every slice, plan its tile grid and extract all
+           128x128 image/prompt patches into a flat list.
+           A record (slice_idx, y0, x0) is stored per patch.
+        2. Mega-forward -- the flat list is chunked by batch_size and
+           forwarded through the JIT-compiled graph in one call per chunk.
+        3. Scatter -- each output patch is routed back to its slice
+           accumulator using the saved metadata, then tent-blended.
 
-        Returns a ``(B, H, W)`` float32 binary array at native resolution.
+        Returns a (B, H, W) float32 binary array at native resolution.
         """
         B, H, W, _ = x.shape
         T   = self._tiler.tile_size
         w2d = self._tiler._weight2d
         eps = 1e-8
 
-        results = []
+        # ---- 1. GATHER ----
+        all_img_patches    = []
+        all_prompt_patches = []
+        patch_meta         = []   # (slice_idx, y0, x0)
+
         for i in range(B):
             img_plane        = x[i, :, :, 0]
             prompt_img_plane = p[i, :, :, 0]
             prompt_msk_plane = p[i, :, :, 1]
 
-            # 1. Sample-specific tile planning
             tile_starts = self._tiler._plan_tiles(prompt_msk_plane, H, W)
-            n_tiles = len(tile_starts)
+            for y0, x0 in tile_starts:
+                img_p  = self._tiler._extract_patch(img_plane,        y0, x0, H, W)
+                pimg_p = self._tiler._extract_patch(prompt_img_plane, y0, x0, H, W)
+                pmsk_p = self._tiler._extract_patch(prompt_msk_plane, y0, x0, H, W)
+                all_img_patches.append(img_p)
+                all_prompt_patches.append(np.stack([pimg_p, pmsk_p], axis=-1))
+                patch_meta.append((i, y0, x0))
 
-            # 2. Extract and chunk-batch tiles
-            accum_prob   = np.zeros((H, W), dtype=np.float32)
-            accum_weight = np.zeros((H, W), dtype=np.float32)
+        # ---- 2. MEGA-FORWARD ----
+        total_patches = len(all_img_patches)
+        all_probs = np.empty((total_patches, T, T), dtype=np.float32)
 
-            for start_t in range(0, n_tiles, batch_size):
-                end_t = min(start_t + batch_size, n_tiles)
-                chunk_starts = tile_starts[start_t:end_t]
-                
-                img_patches    = []
-                prompt_patches = []
-                for y0, x0 in chunk_starts:
-                    img_p  = self._tiler._extract_patch(img_plane,        y0, x0, H, W)
-                    pimg_p = self._tiler._extract_patch(prompt_img_plane, y0, x0, H, W)
-                    pmsk_p = self._tiler._extract_patch(prompt_msk_plane, y0, x0, H, W)
-                    img_patches.append(img_p)
-                    prompt_patches.append(np.stack([pimg_p, pmsk_p], axis=-1))
+        for chunk_start in range(0, total_patches, batch_size):
+            chunk_end    = min(chunk_start + batch_size, total_patches)
+            img_batch    = np.stack(all_img_patches[chunk_start:chunk_end],    axis=0)[:, :, :, np.newaxis]
+            prompt_batch = np.stack(all_prompt_patches[chunk_start:chunk_end], axis=0)
+            prob_batch   = self._fast_predict_fn(
+                tf.constant(img_batch,    dtype=tf.float32),
+                tf.constant(prompt_batch, dtype=tf.float32),
+            ).numpy()  # (chunk, 128, 128, 1)
+            all_probs[chunk_start:chunk_end] = prob_batch[:, :, :, 0]
 
-                # Batch forward pass
-                img_batch    = np.stack(img_patches,    axis=0)[:, :, :, np.newaxis]
-                prompt_batch = np.stack(prompt_patches, axis=0)
-                prob_batch   = self._fast_predict_fn(
-                    tf.constant(img_batch,    dtype=tf.float32),
-                    tf.constant(prompt_batch, dtype=tf.float32),
-                ).numpy()  # (batch_size, 128, 128, 1)
+        # ---- 3. SCATTER ----
+        accum_probs   = [np.zeros((H, W), dtype=np.float32) for _ in range(B)]
+        accum_weights = [np.zeros((H, W), dtype=np.float32) for _ in range(B)]
 
-                # 3. Accumulate results for the sample
-                for j, (y0, x0) in enumerate(chunk_starts):
-                    prob_patch = prob_batch[j, :, :, 0]
-                    y_end = min(y0 + T, H)
-                    x_end = min(x0 + T, W)
-                    oy, ox = y_end - y0, x_end - x0
-                    accum_prob  [y0:y_end, x0:x_end] += prob_patch[:oy, :ox] * w2d[:oy, :ox]
-                    accum_weight[y0:y_end, x0:x_end] += w2d[:oy, :ox]
+        for patch_idx, (slice_i, y0, x0) in enumerate(patch_meta):
+            prob_patch = all_probs[patch_idx]
+            y_end = min(y0 + T, H)
+            x_end = min(x0 + T, W)
+            oy, ox = y_end - y0, x_end - x0
+            accum_probs  [slice_i][y0:y_end, x0:x_end] += prob_patch[:oy, :ox] * w2d[:oy, :ox]
+            accum_weights[slice_i][y0:y_end, x0:x_end] += w2d[:oy, :ox]
 
-            # 4. Final binarization for the sample
-            prob = np.where(accum_weight > eps, accum_prob / (accum_weight + eps), 0.0)
+        results = []
+        for i in range(B):
+            prob = np.where(
+                accum_weights[i] > eps,
+                accum_probs[i] / (accum_weights[i] + eps),
+                0.0,
+            )
             results.append((prob >= threshold).astype(np.float32))
 
         return np.stack(results, axis=0)  # (B, H, W)
