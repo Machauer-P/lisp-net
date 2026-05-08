@@ -39,6 +39,7 @@ Record structure (one dict per (volume, run))
     "shape_original", "modes_evaluated",
     "roi_slices",       # non-empty slices of the ROI along prompt_axis
     "roi_voxels",       # total foreground voxel count of the selected ROI
+    "roi_spatial_size", # [height, width] of the 3D bounding box on the non-prompt axes
 
     # per-mode Prompt-UNet results (nested dict, keyed by canonical mode name)
     "per_mode": {
@@ -203,6 +204,7 @@ def _make_run_record(
     nn_results: Dict[str, dict],
     roi_slices: int,
     roi_voxels: int,
+    roi_spatial_size: List[int],
 ) -> dict:
     """Build one unified record for a (volume, run) pair.
 
@@ -225,6 +227,7 @@ def _make_run_record(
         "modes_evaluated" : list(modes_evaluated),
         "roi_slices"      : roi_slices,
         "roi_voxels"      : roi_voxels,
+        "roi_spatial_size": list(roi_spatial_size),
         "per_mode"        : per_mode_results,
         "nn_results"      : nn_results,
     }
@@ -524,10 +527,15 @@ def run_benchmark(
                     # Count slices + voxels of the selected ROI along prompt_axis.
                     # These are volume-level properties of the structure — the same
                     # for every mode, so computed once here at the top of the run.
-                    roi_axis_sum = seg_3d_binary.any(
-                        axis=tuple(i for i in range(seg_3d_binary.ndim) if i != prompt_axis)
-                    )  # bool array of length = volume depth along prompt_axis
-                    _roi_slices = int(roi_axis_sum.sum())
+                    nz = np.nonzero(seg_3d_binary)
+                    if len(nz[0]) > 0:
+                        bbox_size = [int(np.max(idx) - np.min(idx) + 1) for idx in nz]
+                        _roi_spatial_size = [bbox_size[a] for a in range(seg_3d_binary.ndim) if a != prompt_axis]
+                        _roi_slices = int(bbox_size[prompt_axis])
+                    else:
+                        _roi_spatial_size = [0, 0]
+                        _roi_slices = 0
+                        
                     _roi_voxels = int(seg_3d_binary.sum())
 
                     # ----------------------------------------------------------
@@ -656,6 +664,7 @@ def run_benchmark(
                         nn_results        = nn_results,
                         roi_slices        = _roi_slices,
                         roi_voxels        = _roi_voxels,
+                        roi_spatial_size  = _roi_spatial_size,
                     )
 
                     if return_predictions:
