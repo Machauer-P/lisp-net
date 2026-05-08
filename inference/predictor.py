@@ -201,9 +201,27 @@ class PromptUNetPredictor:
         num_samples = x.shape[0]
         chunks = []
         for start in range(0, num_samples, batch_size):
-            x_chunk = tf.convert_to_tensor(x[start:start + batch_size])
-            p_chunk = tf.convert_to_tensor(p[start:start + batch_size])
+            end = min(start + batch_size, num_samples)
+            actual_size = end - start
+            
+            x_chunk_np = x[start:end]
+            p_chunk_np = p[start:end]
+            
+            # Zero-pad to avoid tf.function retracing on variable batch sizes
+            if actual_size < batch_size:
+                pad_x = np.zeros((batch_size - actual_size, *x_chunk_np.shape[1:]), dtype=x_chunk_np.dtype)
+                pad_p = np.zeros((batch_size - actual_size, *p_chunk_np.shape[1:]), dtype=p_chunk_np.dtype)
+                x_chunk_np = np.concatenate([x_chunk_np, pad_x], axis=0)
+                p_chunk_np = np.concatenate([p_chunk_np, pad_p], axis=0)
+                
+            x_chunk = tf.convert_to_tensor(x_chunk_np)
+            p_chunk = tf.convert_to_tensor(p_chunk_np)
+            
             chunk_logits = self._fast_predict_fn(x_chunk, p_chunk).numpy()
+            
+            if actual_size < batch_size:
+                chunk_logits = chunk_logits[:actual_size]
+                
             chunks.append(chunk_logits)
         logits = np.concatenate(chunks, axis=0) if len(chunks) > 1 else chunks[0]
         return (logits >= threshold).astype(np.float32)  # (B, 128, 128, 1)
@@ -262,13 +280,24 @@ class PromptUNetPredictor:
                     img_patches.append(img_p)
                     prompt_patches.append(np.stack([pimg_p, pmsk_p], axis=-1))
 
-                # Batch forward pass
-                img_batch    = np.stack(img_patches,    axis=0)[:, :, :, np.newaxis]
-                prompt_batch = np.stack(prompt_patches, axis=0)
+                actual_size = len(img_patches)
+                img_batch_np    = np.stack(img_patches,    axis=0)[:, :, :, np.newaxis]
+                prompt_batch_np = np.stack(prompt_patches, axis=0)
+                
+                # Zero-pad to avoid tf.function retracing
+                if actual_size < batch_size:
+                    pad_img = np.zeros((batch_size - actual_size, *img_batch_np.shape[1:]), dtype=img_batch_np.dtype)
+                    pad_prompt = np.zeros((batch_size - actual_size, *prompt_batch_np.shape[1:]), dtype=prompt_batch_np.dtype)
+                    img_batch_np = np.concatenate([img_batch_np, pad_img], axis=0)
+                    prompt_batch_np = np.concatenate([prompt_batch_np, pad_prompt], axis=0)
+                
                 prob_batch   = self._fast_predict_fn(
-                    tf.constant(img_batch,    dtype=tf.float32),
-                    tf.constant(prompt_batch, dtype=tf.float32),
+                    tf.constant(img_batch_np,    dtype=tf.float32),
+                    tf.constant(prompt_batch_np, dtype=tf.float32),
                 ).numpy()  # (batch_size, 128, 128, 1)
+
+                if actual_size < batch_size:
+                    prob_batch = prob_batch[:actual_size]
 
                 # 3. Accumulate results for the sample
                 for j, (y0, x0) in enumerate(chunk_starts):
