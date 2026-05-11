@@ -17,6 +17,8 @@ import os
 import shutil
 import tempfile
 
+from utils.model_loading import load_keras_model
+
 
 def export_model(input_model_path, output_tfjs_dir, fmt="graph"):
     if not os.path.exists(input_model_path):
@@ -24,7 +26,7 @@ def export_model(input_model_path, output_tfjs_dir, fmt="graph"):
         return
 
     print(f"Loading model from {input_model_path}...")
-    model = tf.keras.models.load_model(input_model_path)
+    model = load_keras_model(input_model_path)
 
     if fmt == "graph":
         # GraphModel export via SavedModel bridge

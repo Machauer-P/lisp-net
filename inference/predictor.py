@@ -1,7 +1,8 @@
+import sys
+from pathlib import Path
+
 import numpy as np
 import tensorflow as tf
-from pathlib import Path
-import sys
 
 # ---------------------------------------------------------------------------
 # Project root on sys.path so inference.tiling is importable regardless of
@@ -12,6 +13,9 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from inference.tiling import TiledInference
+
+
+from utils.model_loading import load_keras_model
 
 
 class PromptUNetPredictor:
@@ -77,7 +81,7 @@ class PromptUNetPredictor:
 
     def __init__(self, model_path_or_obj):
         if isinstance(model_path_or_obj, (str, Path)):
-            self.model = tf.keras.models.load_model(str(model_path_or_obj))
+            self.model = load_keras_model(model_path_or_obj)
         else:
             self.model = model_path_or_obj
 
