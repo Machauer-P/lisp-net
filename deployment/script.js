@@ -5,19 +5,18 @@ const IMG_SIZE = 128;
 const QUERY_INPUT = 'inputs:0';   // shape [?, 128, 128, 1]
 const PROMPT_INPUT = 'inputs_1:0'; // shape [?, 128, 128, 2]
 
-async function runDummyTest() {
-    console.log("Running Dummy Test...");
-    tf.tidy(() => {
-        const dummyQuery = tf.zeros([1, 128, 128, 1]);
-        const dummyPrompt = tf.zeros([1, 128, 128, 2]);
-
-        const inputs = {};
-        inputs[QUERY_INPUT] = dummyQuery;
-        inputs[PROMPT_INPUT] = dummyPrompt;
-
-        const result = model.execute(inputs);
-        console.log("Dummy test success! Output shape:", result.shape);
-    });
+async function warmup() {
+    console.log("Warming up GPU (10 iterations)...");
+    const q = tf.zeros([1, 128, 128, 1]);
+    const p = tf.zeros([1, 128, 128, 2]);
+    const inputs = { [QUERY_INPUT]: q, [PROMPT_INPUT]: p };
+    for (let i = 0; i < 10; i++) {
+        const out = model.execute(inputs);
+        out.dataSync();
+        out.dispose();
+    }
+    tf.dispose([q, p]);
+    console.log("Warmup complete.");
 }
 
 function updateStatus(isReady) {
@@ -34,10 +33,10 @@ function updateStatus(isReady) {
 async function init() {
     try {
         // Load model as GraphModel (exported via SavedModel bridge)
-        model = await tf.loadGraphModel('./p_unet_282_tfjs/model.json');
+        model = await tf.loadGraphModel('./p_unet_332_tfjs/model.json');
         console.log("Model loaded successfully.");
 
-        await runDummyTest();
+        await warmup();
 
         const btn = document.getElementById('predictBtn');
         btn.querySelector('.btn-text').innerText = 'Run Segmentation';
@@ -97,10 +96,11 @@ document.getElementById('predictBtn').onclick = async () => {
         inputDict[PROMPT_INPUT] = promptTensor;
 
         // --- INFERENCE AND BENCHMARKING ---
+        // Flush GPU queue (image preprocessing) before starting timer
+        queryTensor.dataSync();
+
         const t0 = performance.now();
-        // GraphModel uses execute(), and output may be float16 so cast to float32
         let prediction = model.execute(inputDict);
-        prediction = prediction.cast('float32');
 
         // Wait for WebGL logic to sync if necessary via dataSync
         prediction.dataSync();
