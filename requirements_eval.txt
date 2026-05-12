@@ -22,6 +22,9 @@ mlflow==3.11.1
 ipykernel==7.2.0
 huggingface_hub==1.11.0
 
+# GPU memory profiling (framework-agnostic, same as nvidia-smi)
+nvidia-ml-py>=13.0
+
 # nnInteractive evaluation requirements
 acvl_utils==0.2.6
 batchgenerators==0.25.1
