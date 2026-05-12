@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TF.js vs ONNX Runtime Web — Inference Benchmark</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js"></script>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --border:#2a2d3a; --text:#e1e4ed; --dim:#8b8fa6; --accent:#6c8cff; --green:#4ade80; --red:#f87171; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:Inter,system-ui,sans-serif; padding:24px; max-width:960px; margin:0 auto; }
+  h1 { font-size:1.5rem; margin-bottom:8px; }
+  .subtitle { color:var(--dim); margin-bottom:24px; }
+  .config { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:20px; }
+  .config label { display:block; font-size:0.8rem; color:var(--dim); margin-bottom:4px; }
+  .config input { width:100%; padding:8px 12px; background:#0f1117; border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:0.85rem; margin-bottom:12px; }
+  .config button { padding:8px 20px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600; }
+  .config button:disabled { opacity:0.4; cursor:not-allowed; }
+  .results { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:24px; }
+  @media (max-width:700px) { .results { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .card h2 { font-size:1.1rem; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+  .badge { font-size:0.65rem; padding:2px 8px; border-radius:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; }
+  .badge-webgl { background:#3b82f622; color:#60a5fa; }
+  .badge-webgpu{ background:#8b5cf622; color:#a78bfa; }
+  .badge-wasm  { background:#eab30822; color:#facc15; }
+  .badge-cpu   { background:#6b728022; color:#9ca3af; }
+  table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  th { text-align:left; color:var(--dim); font-weight:500; padding:4px 8px; }
+  td { padding:6px 8px; border-top:1px solid var(--border); }
+  td:last-child { text-align:right; font-variant-numeric:tabular-nums; font-feature-settings:"tnum"; }
+  .winner { color:var(--green); font-weight:600; }
+  .comparison { background:var(--card); border:1px solid var(--accent); border-radius:8px; padding:16px; }
+  .comparison h2 { font-size:1.1rem; margin-bottom:12px; color:var(--accent); }
+  .bar-wrap { background:var(--border); border-radius:4px; height:24px; margin:8px 0; position:relative; overflow:hidden; }
+  .bar-fill { height:100%; border-radius:4px; display:flex; align-items:center; padding-left:8px; font-size:0.75rem; font-weight:600; }
+  .bar-tfjs { background:linear-gradient(135deg,#3b82f6,#2563eb); }
+  .bar-onnx { background:linear-gradient(135deg,#8b5cf6,#7c3aed); }
+  #status { color:var(--dim); font-size:0.85rem; margin-bottom:12px; }
+  .error { color:var(--red); font-size:0.8rem; padding:8px; background:#f8717122; border-radius:6px; margin-top:8px; }
+</style>
+</head>
+<body>
+
+<h1>TF.js vs ONNX Runtime Web — Inference Benchmark</h1>
+<p class="subtitle">Automated: loads both models, runs warmup + timed iterations, reports results.</p>
+
+<div class="config">
+  <label>TF.js Model (GraphModel)</label>
+  <input id="tfjsPath" value="./p_unet_332_tfjs/model.json">
+  <label>ONNX Model (.onnx)</label>
+  <input id="onnxPath" value="./p_unet_332.onnx">
+  <label style="margin-top:8px;">Number of benchmark iterations</label>
+  <input id="numIters" value="50" style="width:100px;">
+  <button id="runBtn" onclick="runBenchmark()">Run Benchmark</button>
+  <span id="status"></span>
+</div>
+
+<div class="results">
+  <div class="card" id="tfjsCard">
+    <h2>TF.js <span class="badge badge-cpu" id="tfjsBadge">--</span></h2>
+    <div id="tfjsBody"><em style="color:var(--dim)">Waiting...</em></div>
+  </div>
+  <div class="card" id="onnxCard">
+    <h2>ONNX Runtime Web <span class="badge badge-cpu" id="onnxBadge">--</span></h2>
+    <div id="onnxBody"><em style="color:var(--dim)">Waiting...</em></div>
+  </div>
+</div>
+
+<div class="comparison" id="comparison" style="display:none;">
+  <h2>Speed Comparison (mean inference time)</h2>
+  <div id="comparisonBody"></div>
+</div>
+
+<script>
+const IMG_H = 128, IMG_W = 128;
+const WARMUP_ITERS = 10;
+
+function fmtMB(bytes) { return (bytes / (1024 * 1024)).toFixed(1); }
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+function stats(arr) {
+  const sorted = [...arr].sort((a, b) => a - b);
+  const n = sorted.length;
+  const mean = sorted.reduce((a, b) => a + b, 0) / n;
+  const std = Math.sqrt(sorted.reduce((s, v) => s + (v - mean) ** 2, 0) / n);
+  return {
+    mean: mean.toFixed(1), std: std.toFixed(1),
+    min: sorted[0].toFixed(1), max: sorted[n - 1].toFixed(1),
+    p50: sorted[Math.floor(n / 2)].toFixed(1),
+    p95: sorted[Math.floor(n * 0.95)].toFixed(1),
+  };
+}
+
+function badgeClass(backend) {
+  if (backend.includes('webgl')) return 'badge-webgl';
+  if (backend.includes('webgpu')) return 'badge-webgpu';
+  if (backend.includes('wasm')) return 'badge-wasm';
+  return 'badge-cpu';
+}
+
+// ── TF.js benchmark ────────────────────────────────────────────────────────
+async function benchmarkTFJS(modelPath, numIters) {
+  // Baseline memory (before any TF.js allocations for this run)
+  const memBaseline = tf.memory();
+
+  const tLoad0 = performance.now();
+  const model = await tf.loadGraphModel(modelPath);
+  const loadTime = (performance.now() - tLoad0).toFixed(0);
+
+  const memAfterLoad = tf.memory();
+
+  // Determine which key is query (1 channel) vs prompt (2 channels) by shape.
+  // TF.js GraphModel uses tensorShape.dim[] with string sizes (e.g. {size: '2'}).
+  const inputNodes = model.modelSignature.inputs;
+  let queryKey, promptKey;
+  for (const [k, v] of Object.entries(inputNodes)) {
+    let dims = v.shape;
+    if (!dims && v.tensorShape && v.tensorShape.dim) {
+      dims = v.tensorShape.dim.map(d => Number(d.size));
+    }
+    if (dims && dims[dims.length - 1] === 2) promptKey = k;
+    else queryKey = k;
+  }
+  console.log('TF.js inputs:', {queryKey, promptKey, inputNodes});
+
+  const backend = tf.getBackend();
+
+  // Warmup
+  for (let i = 0; i < WARMUP_ITERS; i++) {
+    const q = tf.zeros([1, IMG_H, IMG_W, 1]);
+    const p = tf.zeros([1, IMG_H, IMG_W, 2]);
+    const out = model.execute({ [queryKey]: q, [promptKey]: p });
+    out.dataSync();
+    tf.dispose([q, p, out]);
+  }
+
+  const memAfterWarmup = tf.memory();
+
+  // Timed runs
+  const times = [];
+  for (let i = 0; i < numIters; i++) {
+    const q = tf.zeros([1, IMG_H, IMG_W, 1]);
+    const p = tf.zeros([1, IMG_H, IMG_W, 2]);
+
+    const t0 = performance.now();
+    const out = model.execute({ [queryKey]: q, [promptKey]: p });
+    out.dataSync();
+    const t1 = performance.now();
+
+    times.push(t1 - t0);
+    tf.dispose([q, p, out]);
+  }
+
+  const memAfterBench = tf.memory();
+
+  // Record peak seen during the entire run
+  const peakMB = Math.max(
+    memAfterLoad.numBytes, memAfterWarmup.numBytes, memAfterBench.numBytes
+  );
+
+  return {
+    loadTime,
+    backend,
+    queryKey,
+    promptKey,
+    times,
+    memBaselineMB: fmtMB(memBaseline.numBytes),
+    memBaselineTensors: memBaseline.numTensors,
+    memModelMB: fmtMB(memAfterLoad.numBytes),
+    memModelTensors: memAfterLoad.numTensors,
+    memWarmupMB: fmtMB(memAfterWarmup.numBytes),
+    memBenchMB: fmtMB(memAfterBench.numBytes),
+    memBenchTensors: memAfterBench.numTensors,
+    peakMB: fmtMB(peakMB),
+    _model: model,
+  };
+}
+
+// ── ONNX benchmark ─────────────────────────────────────────────────────────
+async function benchmarkONNX(modelPath, numIters) {
+  ort.env.wasm.wasmPaths =
+    'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
+
+  const tLoad0 = performance.now();
+  const session = await ort.InferenceSession.create(modelPath, {
+    executionProviders: ['webgpu', 'wasm'],
+  });
+  const loadTime = (performance.now() - tLoad0).toFixed(0);
+
+  let ep = 'wasm';
+  try {
+    const eps = session.handler?.ep || (session.handler?.createInferenceHandler && 'webgpu');
+    if (eps) ep = eps;
+  } catch (_) { /* use default */ }
+
+  // Determine query vs prompt by name (ONNX preserves Keras input names: 'image', 'prompt')
+  const inputNames = session.inputNames;
+  const promptKey = inputNames.find(n => n.toLowerCase().includes('prompt')) || inputNames[1];
+  const queryKey = inputNames.find(n => n !== promptKey) || inputNames[0];
+
+  const queryData = new Float32Array(IMG_H * IMG_W);
+  const promptData = new Float32Array(IMG_H * IMG_W * 2);
+
+  // Warmup
+  for (let i = 0; i < WARMUP_ITERS; i++) {
+    const q = new ort.Tensor('float32', queryData.slice(), [1, IMG_H, IMG_W, 1]);
+    const p = new ort.Tensor('float32', promptData.slice(), [1, IMG_H, IMG_W, 2]);
+    await session.run({ [queryKey]: q, [promptKey]: p });
+  }
+
+  // Timed runs
+  const times = [];
+  for (let i = 0; i < numIters; i++) {
+    const q = new ort.Tensor('float32', queryData.slice(), [1, IMG_H, IMG_W, 1]);
+    const p = new ort.Tensor('float32', promptData.slice(), [1, IMG_H, IMG_W, 2]);
+
+    const t0 = performance.now();
+    await session.run({ [queryKey]: q, [promptKey]: p });
+    const t1 = performance.now();
+
+    times.push(t1 - t0);
+  }
+
+  return {
+    loadTime,
+    backend: ep,
+    queryKey,
+    promptKey,
+    times,
+    _session: session,
+  };
+}
+
+// ── Render card ────────────────────────────────────────────────────────────
+function renderTFJSCard(result) {
+  const badge = document.getElementById('tfjsBadge');
+  badge.textContent = result.backend.toUpperCase();
+  badge.className = 'badge ' + badgeClass(result.backend);
+
+  const s = stats(result.times);
+  document.getElementById('tfjsBody').innerHTML = `
+    <table>
+      <tr><td colspan="2" style="color:var(--dim);font-weight:600;padding-top:8px;">Timing</td></tr>
+      <tr><th>Model load</th><td>${result.loadTime} ms</td></tr>
+      <tr><th>Iterations</th><td>${result.times.length}</td></tr>
+      <tr><th>Mean</th><td><strong>${s.mean} ms</strong></td></tr>
+      <tr><th>Std</th><td>${s.std} ms</td></tr>
+      <tr><th>Min / P50 / P95 / Max</th><td>${s.min} / ${s.p50} / ${s.p95} / ${s.max} ms</td></tr>
+      <tr><td colspan="2" style="color:var(--dim);font-weight:600;padding-top:12px;">Memory (WebGL textures)</td></tr>
+      <tr><th>Baseline</th><td>${result.memBaselineMB} MB (${result.memBaselineTensors} tensors)</td></tr>
+      <tr><th>Model loaded</th><td>${result.memModelMB} MB (${result.memModelTensors} tensors)</td></tr>
+      <tr><th>After warmup</th><td>${result.memWarmupMB} MB</td></tr>
+      <tr><th>After benchmark</th><td>${result.memBenchMB} MB (${result.memBenchTensors} tensors)</td></tr>
+      <tr><th>Peak observed</th><td><strong>${result.peakMB} MB</strong></td></tr>
+      <tr><th>Model overhead</th><td>${(result.memModelMB - result.memBaselineMB).toFixed(1)} MB (weights + graph)</td></tr>
+      <tr><td colspan="2" style="color:var(--dim);font-weight:600;padding-top:12px;">I/O</td></tr>
+      <tr><th>Input names</th><td>${result.queryKey} / ${result.promptKey}</td></tr>
+    </table>
+  `;
+}
+
+function renderONNXCard(result) {
+  const badge = document.getElementById('onnxBadge');
+  badge.textContent = result.backend.toUpperCase();
+  badge.className = 'badge ' + badgeClass(result.backend);
+
+  const s = stats(result.times);
+  document.getElementById('onnxBody').innerHTML = `
+    <table>
+      <tr><td colspan="2" style="color:var(--dim);font-weight:600;padding-top:8px;">Timing</td></tr>
+      <tr><th>Model load</th><td>${result.loadTime} ms</td></tr>
+      <tr><th>Iterations</th><td>${result.times.length}</td></tr>
+      <tr><th>Mean</th><td><strong>${s.mean} ms</strong></td></tr>
+      <tr><th>Std</th><td>${s.std} ms</td></tr>
+      <tr><th>Min / P50 / P95 / Max</th><td>${s.min} / ${s.p50} / ${s.p95} / ${s.max} ms</td></tr>
+      <tr><td colspan="2" style="color:var(--dim);font-weight:600;padding-top:12px;">Memory</td></tr>
+      <tr><td colspan="2" style="color:var(--dim);font-size:0.8rem;">ONNX Runtime Web has no programmatic VRAM API.<br>Check browser task manager (Shift+Esc in Chrome) for GPU memory.</td></tr>
+      <tr><td colspan="2" style="color:var(--dim);font-weight:600;padding-top:12px;">I/O</td></tr>
+      <tr><th>Input names</th><td>${result.queryKey} / ${result.promptKey}</td></tr>
+    </table>
+  `;
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────
+async function runBenchmark() {
+  const tfjsPath = document.getElementById('tfjsPath').value;
+  const onnxPath = document.getElementById('onnxPath').value;
+  const numIters = parseInt(document.getElementById('numIters').value) || 50;
+
+  const status = document.getElementById('status');
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+
+  // Reset UI
+  document.getElementById('tfjsBody').innerHTML = '<em style="color:var(--dim)">Waiting...</em>';
+  document.getElementById('onnxBody').innerHTML = '<em style="color:var(--dim)">Waiting...</em>';
+  document.getElementById('tfjsBadge').textContent = '--';
+  document.getElementById('tfjsBadge').className = 'badge badge-cpu';
+  document.getElementById('onnxBadge').textContent = '--';
+  document.getElementById('onnxBadge').className = 'badge badge-cpu';
+  document.getElementById('comparison').style.display = 'none';
+
+  let tfjsResult = null, onnxResult = null;
+
+  // ── Phase 1: TF.js ────────────────────────────────────────────────────
+  status.textContent = 'Phase 1/2: Benchmarking TF.js...';
+  document.getElementById('tfjsBody').innerHTML = '<em style="color:var(--dim)">Running...</em>';
+
+  try {
+    tfjsResult = await benchmarkTFJS(tfjsPath, numIters);
+    renderTFJSCard(tfjsResult);
+    status.textContent = 'Phase 1/2: TF.js done. Cleaning up GPU memory...';
+
+    // Dispose model and force engine cleanup
+    if (tfjsResult._model) tfjsResult._model.dispose();
+    tf.engine().reset();
+
+    // Allow GPU driver to actually free the memory
+    await new Promise(r => setTimeout(r, 300));
+
+    // Verify cleanup
+    const memAfterCleanup = tf.memory();
+    console.log('TF.js cleanup: ' + fmtMB(memAfterCleanup.numBytes) + ' MB remaining (' + memAfterCleanup.numTensors + ' tensors)');
+
+    status.textContent = 'Phase 1/2: TF.js complete, memory freed.';
+  } catch (err) {
+    document.getElementById('tfjsBody').innerHTML = `<div class="error">${err.message}</div>`;
+    document.getElementById('tfjsBadge').textContent = 'ERROR';
+    console.error('TF.js benchmark failed:', err);
+  }
+
+  // ── Phase 2: ONNX ─────────────────────────────────────────────────────
+  status.textContent = 'Phase 2/2: Benchmarking ONNX Runtime Web...';
+  document.getElementById('onnxBody').innerHTML = '<em style="color:var(--dim)">Running...</em>';
+
+  try {
+    onnxResult = await benchmarkONNX(onnxPath, numIters);
+    renderONNXCard(onnxResult);
+    status.textContent = 'Phase 2/2: ONNX done.';
+
+    // Release session
+    if (onnxResult._session && onnxResult._session.release) {
+      onnxResult._session.release();
+    }
+  } catch (err) {
+    document.getElementById('onnxBody').innerHTML = `<div class="error">${err.message}<br><br>Did you run the export script?<br><code>python deployment/keras_to_onnx.py --input training/p_unet_332.keras --output deployment/p_unet_332.onnx</code></div>`;
+    document.getElementById('onnxBadge').textContent = 'ERROR';
+    console.error('ONNX benchmark failed:', err);
+  }
+
+  // ── Comparison ─────────────────────────────────────────────────────────
+  if (tfjsResult && onnxResult) {
+    const tfjsMean = parseFloat(stats(tfjsResult.times).mean);
+    const onnxMean = parseFloat(stats(onnxResult.times).mean);
+    const maxBar = Math.max(tfjsMean, onnxMean);
+    const tfjsPct = (tfjsMean / maxBar * 100).toFixed(1);
+    const onnxPct = (onnxMean / maxBar * 100).toFixed(1);
+    const faster = tfjsMean < onnxMean ? 'TF.js' : 'ONNX Runtime Web';
+    const speedup = (Math.max(tfjsMean, onnxMean) / Math.min(tfjsMean, onnxMean)).toFixed(2);
+
+    document.getElementById('comparison').style.display = 'block';
+    document.getElementById('comparisonBody').innerHTML = `
+      <p style="margin-bottom:12px;"><strong>${faster}</strong> is <strong>${speedup}x</strong> faster (mean of ${numIters} iterations).</p>
+      <div style="margin-bottom:4px;display:flex;justify-content:space-between;"><span>TF.js (${stats(tfjsResult.times).mean} ms) — ${tfjsResult.backend}</span><span>${tfjsPct}%</span></div>
+      <div class="bar-wrap"><div class="bar-fill bar-tfjs" style="width:${tfjsPct}%">${tfjsResult.backend.toUpperCase()}</div></div>
+      <div style="margin-bottom:4px;display:flex;justify-content:space-between;"><span>ONNX (${stats(onnxResult.times).mean} ms) — ${onnxResult.backend}</span><span>${onnxPct}%</span></div>
+      <div class="bar-wrap"><div class="bar-fill bar-onnx" style="width:${onnxPct}%">${onnxResult.backend.toUpperCase()}</div></div>
+      <p style="margin-top:12px;color:var(--dim);font-size:0.8rem;">TF.js peak GPU memory: <strong>${tfjsResult.peakMB} MB</strong> | ONNX memory: check browser task manager (Shift+Esc)</p>
+    `;
+  } else if (tfjsResult) {
+    document.getElementById('comparison').style.display = 'block';
+    document.getElementById('comparisonBody').innerHTML = `<p style="color:var(--dim);">ONNX benchmark failed — only TF.js results available.</p>`;
+  } else if (onnxResult) {
+    document.getElementById('comparison').style.display = 'block';
+    document.getElementById('comparisonBody').innerHTML = `<p style="color:var(--dim);">TF.js benchmark failed — only ONNX results available.</p>`;
+  }
+
+  status.textContent = 'Benchmark complete.';
+  btn.disabled = false;
+}
+
+// Auto-run on page load
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(runBenchmark, 500);
+});
+</script>
+</body>
+</html>
