@@ -6,6 +6,7 @@ research/
 utils/augmentation_results/
 data/test_data/*/
 data/train_data/*/
+docs/tiling_figure/
 deployment/*/
 evaluation/eval_prompt_unet 
 .ipynb_checkpoints/
@@ -19,6 +20,7 @@ training/p_unet_21_extracted_2.py
 *.pkl
 *.npz
 *.keras
+*.onnx
 *.nii.gz
 *.yml
 *.pdf
