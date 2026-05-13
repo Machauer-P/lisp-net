@@ -5,35 +5,46 @@ def universal_normalization(volume, modality="CT"):
     Unified intensity normalization for CT, MRI, and any other modality.
     Pure numpy — no TF dependency.
 
-    Workflow (applied in this order):
-        1. Clip    — removes extreme outliers / artifacts
-        2. Normalize — z-score using either hardcoded (CT) or adaptive (MRI) stats
+    Two strategies are selected automatically from the ``modality`` string:
 
-    CT strategy
-    -----------
-    Uses *hardcoded* global statistics derived from large multi-organ CT datasets.
-    This is valid because CT intensity is physically calibrated in Hounsfield Units
-    (HU), which are scanner-independent.  Clipping to [-1000, 1000] covers the
-    full range of soft tissue, bone, and air.
+    **CT path** — triggered when the modality contains "ct" (case-insensitive)
+    **and** does NOT contain "micro".  This path assumes the data is calibrated
+    in Hounsfield Units (HU) and uses fixed global statistics::
 
-    MRI / Other strategy
-    --------------------
-    MRI intensity has no physical unit and varies arbitrarily between scanners,
-    field strengths, and pulse sequences.  Per-volume statistics are therefore
-    *required* for cross-scanner generalisation.  Foreground is isolated before
-    computing statistics to prevent the large background region from biasing the
-    mean/std towards zero.
+        clip to [-1000, 1000] HU  →  (x + 15) / 160  →  clip to [-5, 5]
+
+    Only use this for **medical CT** scanners.  Micro-CT, industrial CT, and
+    other non-HU-calibrated modalities must use the MRI / Other path below.
+
+    **MRI / Other path** — triggered for all other modalities (MRI, micro-CT,
+    unknown, etc.).  Per-volume adaptive normalisation::
+
+        foreground-based percentile clipping (p0.5–p99.5)
+        → per-volume z-score  →  background forced to -5
+        → final clip to [-5, 5]
+
+    This path makes no assumptions about physical units and is safe for any
+    modality, though for HU-calibrated CT the fixed statistics of the CT path
+    give better tissue-intensity consistency.
 
     Args:
-        volume   : np.ndarray of shape (Z, Y, X) or any shape.
-        modality : str — "CT" for computed tomography, anything else for MRI/other.
+        volume   : np.ndarray of any shape — raw intensities.
+        modality : str — ``"CT"`` for medical CT (HU), anything else for
+                   non-calibrated modalities.  ``"micro-CT"`` and similar
+                   names containing "micro" are automatically routed to the
+                   MRI / Other path.
 
     Returns:
-        np.ndarray (float32), values clipped to [-5.0, 5.0].
+        np.ndarray (float32), values clamped to [-5.0, 5.0].
     """
     volume = np.asarray(volume, dtype=np.float32)
 
-    if "ct" in str(modality).lower():
+    mod_lower = str(modality).lower().strip()
+    # Micro-CT and similar modalities are NOT Hounsfield-calibrated — their
+    # intensities are arbitrary (uint8/uint16), so per-volume adaptive
+    # normalisation is required.  We deny-list "micro" to prevent them from
+    # matching the CT branch below.
+    if "ct" in mod_lower and "micro" not in mod_lower:
         # 1. Clip to broad body window — removes metal artifacts and air outliers.
         volume = np.clip(volume, -1000.0, 1000.0)
 
@@ -86,25 +97,27 @@ def universeg_normalization(volume, modality="CT"):
     Intensity normalization matching UniverSeg's training convention.
     Produces float32 values in [0, 1].
 
-    Applied to the raw 3-D volume so that cross-slice relative brightness is
-    preserved — identical to how UniverSeg was trained.
+    **CT path** — triggered when ``modality`` contains "ct" and does NOT
+    contain "micro".  Assumes Hounsfield Units::
 
-    CT  : clip to [-500, 1000] HU (soft-tissue window used by UniverSeg)
-           → min-max to [0, 1]:  (HU + 500) / 1500
-    MRI : clip to 0.5–99.5 percentile of the full volume
-           → min-max to [0, 1]
+        clip to [-500, 1000] HU  →  min-max to [0, 1]  →  (x + 500) / 1500
+
+    **MRI / Other path** — all other modalities (MRI, micro-CT, unknown).
+    Foreground-based percentile clipping (p0.5–p99.5) → min-max to [0, 1].
 
     Args:
-        volume   : np.ndarray of any shape — RAW intensities (before any
-                   z-score or other normalization is applied).
-        modality : str — "CT" or anything else for MRI/other.
+        volume   : np.ndarray of any shape — raw intensities (before any
+                   z-score or other normalisation).
+        modality : str — ``"CT"`` for medical CT (HU), anything else for
+                   non-calibrated modalities.
 
     Returns:
-        np.ndarray (float32), values clipped to [0, 1].
+        np.ndarray (float32), values in [0, 1].
     """
     volume = np.asarray(volume, dtype=np.float32)
 
-    if "ct" in str(modality).lower():
+    mod_lower = str(modality).lower().strip()
+    if "ct" in mod_lower and "micro" not in mod_lower:
         v_min, v_max = -500.0, 1000.0
         volume = np.clip(volume, v_min, v_max)
     else:  # MRI / Other
