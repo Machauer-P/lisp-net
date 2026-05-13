@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+import sys
 
 def to_numpy(x):
     """
@@ -7,8 +7,10 @@ def to_numpy(x):
     Supports NumPy arrays, TensorFlow tensors, and PyTorch (including GPU) tensors.
     """
     # 1. Handle TensorFlow tensors
-    if isinstance(x, tf.Tensor):
-        return x.numpy()
+    if 'tensorflow' in sys.modules:
+        import tensorflow as tf
+        if isinstance(x, tf.Tensor):
+            return x.numpy()
     
     # 2. Handle PyTorch tensors (using hasattr to avoid a hard dependency on 'torch' at runtime)
     # Tensors on GPU require .detach().cpu().numpy()
@@ -54,6 +56,7 @@ def dice_score_tf(y_true, y_pred, smooth=1e-6):
     Legacy TensorFlow implementation of the Dice score.
     Maintains the calculation within the TensorFlow graph (e.g., on GPU).
     """
+    import tensorflow as tf
     if y_true.dtype != tf.float32:
         y_true = tf.cast(y_true, tf.float32)
     if y_pred.dtype != tf.float32:
@@ -118,28 +121,24 @@ def dice_window_nn(y_true_3d, y_pred_3d, axis, center_idx, window=10, smooth=1e-
     Returns:
         float — mean Dice over slices in [center_idx-window, center_idx+window].
     """
-    y_true_3d = tf.cast(to_numpy(y_true_3d), tf.float32)
-    y_pred_3d = tf.cast(to_numpy(y_pred_3d), tf.float32)
+    y_true_3d = to_numpy(y_true_3d).astype(np.float32)
+    y_pred_3d = to_numpy(y_pred_3d).astype(np.float32)
 
     # Move the chosen axis to the front so slicing is uniform
-    perm = [axis] + [i for i in range(3) if i != axis]
-    y_true_3d = tf.transpose(y_true_3d, perm=perm)
-    y_pred_3d = tf.transpose(y_pred_3d, perm=perm)
+    y_true_3d = np.moveaxis(y_true_3d, axis, 0)
+    y_pred_3d = np.moveaxis(y_pred_3d, axis, 0)
 
-    num_slices = tf.shape(y_true_3d)[0]
-    start = tf.maximum(center_idx - window, 0)
-    end   = tf.minimum(center_idx + window + 1, num_slices)
+    num_slices = y_true_3d.shape[0]
+    start = max(center_idx - window, 0)
+    end   = min(center_idx + window + 1, num_slices)
 
     y_true_win = y_true_3d[start:end]
     y_pred_win = y_pred_3d[start:end]
 
-    n = tf.shape(y_true_win)[0]
-    dice_scores = tf.map_fn(
-        lambda i: dice_score_tf(y_true_win[i], y_pred_win[i], smooth),
-        tf.range(n),
-        dtype=tf.float32,
-    )
-    return float(tf.reduce_mean(dice_scores).numpy())
+    n = y_true_win.shape[0]
+    dice_scores = [dice_numpy(y_true_win[i], y_pred_win[i], smooth) for i in range(n)]
+    
+    return float(np.mean(dice_scores))
 
 
 def dice_window_prompt(y_true_3d, y_pred_3d, forward_idxs, window=10, smooth=1e-6):
@@ -162,22 +161,19 @@ def dice_window_prompt(y_true_3d, y_pred_3d, forward_idxs, window=10, smooth=1e-
     Returns:
         float — mean Dice over slices in the window.
     """
-    y_true_3d = tf.cast(to_numpy(y_true_3d), tf.float32)
-    y_pred_3d = tf.cast(to_numpy(y_pred_3d), tf.float32)
+    y_true_3d = to_numpy(y_true_3d).astype(np.float32)
+    y_pred_3d = to_numpy(y_pred_3d).astype(np.float32)
 
-    num_slices = tf.shape(y_true_3d)[0]
+    num_slices = y_true_3d.shape[0]
     center_idx = (num_slices - len(forward_idxs)) - 1
 
-    start = tf.maximum(center_idx - window, 0)
-    end   = tf.minimum(center_idx + window + 1, num_slices)
+    start = max(center_idx - window, 0)
+    end   = min(center_idx + window + 1, num_slices)
 
     y_true_win = y_true_3d[start:end]
     y_pred_win = y_pred_3d[start:end]
 
-    n = tf.shape(y_true_win)[0]
-    dice_scores = tf.map_fn(
-        lambda i: dice_score_tf(y_true_win[i], y_pred_win[i], smooth),
-        tf.range(n),
-        dtype=tf.float32,
-    )
-    return float(tf.reduce_mean(dice_scores).numpy())
+    n = y_true_win.shape[0]
+    dice_scores = [dice_numpy(y_true_win[i], y_pred_win[i], smooth) for i in range(n)]
+    
+    return float(np.mean(dice_scores))
