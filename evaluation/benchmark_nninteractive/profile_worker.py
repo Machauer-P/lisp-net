@@ -217,9 +217,12 @@ def _profile_nn(vol_info: dict) -> float:
     prompt_3d[mid] = seg_3d[mid]
 
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-    model_dir = str(
-        _PROJECT_ROOT / 'evaluation' / 'benchmark_models' / 'nnInteractive' / 'nnInteractive_v1.0'
+    model_dir = Path(
+        _PROJECT_ROOT / 'evaluation' / 'benchmark_models' / 'nnInteractive' / 'nnInteractive'
     )
+    if not model_dir.exists():
+        print(f'  Model dir not found: {model_dir} — falling back to auto-download')
+        model_dir = None
 
     nn = NNInteractiveInference(model_dir=model_dir, device=device, verbose=False)
 
