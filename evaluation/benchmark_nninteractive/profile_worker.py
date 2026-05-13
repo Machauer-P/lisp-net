@@ -147,7 +147,7 @@ def _profile_punet(vol_info: dict) -> float:
         model_path=model_path,
         modality=modality,
         normalization='universal',
-        ssf_strategy=ConfidenceDropStrategy(drop_factor=0.05),
+        ssf_strategy=ConfidenceDropStrategy(drop_fraction=0.05),
         buffer_size=4,
         batch_size=6,
     )
