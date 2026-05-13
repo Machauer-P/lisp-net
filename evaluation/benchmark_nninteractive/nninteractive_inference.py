@@ -34,6 +34,15 @@ Notes
   constructor downloads/loads the model immediately.
 * ``reset()`` clears all nnInteractive session state so the same
   NNInteractiveInference instance can be reused across multiple volumes.
+
+Interaction design
+------------------
+IFL correction slices (``user_interacts_idx``) are combined with the initial
+prompt into a single ``add_initial_seg_interaction`` call.  This places all
+corrections in the initial-seg channel (-7), which is designed for full
+segmentation masks and triggers a full-volume refinement pass.  The scribble
+channels (-2/-1) are designed for sparse user annotations — passing dense
+slice masks through ``add_scribble_interaction`` produces degraded results.
 """
 
 from __future__ import annotations
@@ -209,19 +218,17 @@ class NNInteractiveInference:
         window: int = 10,
     ) -> dict:
         """
-        Run nnInteractive on one volume with sequential interactions.
+        Run nnInteractive on one volume.
 
         Interaction protocol
         --------------------
-        1. ``add_initial_seg_interaction(initial_prompt_3d)``
-           — resets session state and runs a full-volume refinement pass.
-        2. For each index in ``user_interacts_idx``:
-           ``add_scribble_interaction(gt_slice_3d, include_interaction=True)``
-           — one nnInteractive forward pass per correction, mirroring how a
-           human annotator would fix individual slices one at a time.
-
-        This gives ``nn+ifl`` and ``nn+ifl_ssf`` genuinely different interaction
-        budgets so the comparison against P-UNet is fair.
+        The initial prompt and all IFL correction slices are combined into a
+        single ``add_initial_seg_interaction`` call.  This writes the merged
+        prompt to the initial-seg channel (-7), which is designed for full
+        segmentation masks, and triggers a full-volume refinement pass.
+        Using scribble channels (-2/-1) for full-slice GT masks is avoided
+        because those channels are designed for sparse user annotations and
+        produce degraded results with dense slice masks.
 
         Parameters
         ----------
@@ -231,13 +238,14 @@ class NNInteractiveInference:
             (HU for CT, raw intensity for MRI) — nnInteractive normalises
             internally.
         seg_3d : np.ndarray, shape (X, Y, Z)
-            Binary ground-truth volume.  Used only for metric computation and
-            to build the per-slice correction masks for scribble interactions.
+            Binary ground-truth volume.  Used for metric computation and
+            to build the per-slice correction masks.
         initial_prompt_3d : np.ndarray, shape (X, Y, Z)
             3-D binary prompt from the initial slice interaction.
         user_interacts_idx : list[int]
             Slice indices where InteractiveFeedbackLoop substituted GT.
-            Each index produces one sequential scribble-interaction forward pass.
+            These slices are combined with the initial prompt into a single
+            ``add_initial_seg_interaction`` call.
         prompt_axis : int
         prompt_idx  : int
         window : int
@@ -260,6 +268,26 @@ class NNInteractiveInference:
 
         initial_prompt_3d = initial_prompt_3d.astype(np.int16)
 
+        # --- Build combined prompt (initial + any IFL correction slices) ---
+        # Combining all corrections into the initial segmentation gives
+        # nnInteractive the best possible refinement, since the initial-seg
+        # channel (-7) is designed for full segmentation masks, unlike the
+        # scribble channels (-2/-1) which are meant for sparse annotations.
+        if user_interacts_idx:
+            combined_prompt = initial_prompt_3d.copy()
+            for idx in user_interacts_idx:
+                interact_slice = np.take(seg_3d, idx, axis=prompt_axis)
+                interact_3d    = np.zeros(img_4d.shape[1:], dtype=np.int16)
+                if prompt_axis == 0:
+                    interact_3d[idx, :, :]  = interact_slice
+                elif prompt_axis == 1:
+                    interact_3d[:, idx, :]  = interact_slice
+                else:
+                    interact_3d[:, :, idx]  = interact_slice
+                np.maximum(combined_prompt, interact_3d, out=combined_prompt)
+        else:
+            combined_prompt = initial_prompt_3d
+
         # --- nnInteractive session ---
         self._session.set_image(img_4d)
 
@@ -268,37 +296,17 @@ class NNInteractiveInference:
 
         with torch.no_grad():
             try:
-                # Step 1: initial prompt — always a single initial-seg interaction.
-                # add_initial_seg_interaction resets all interactions and runs a
-                # full-volume refinement pass, matching the baseline behaviour.
+                # Single initial-seg interaction with all prompt information.
+                # add_initial_seg_interaction resets all interactions,
+                # writes the combined prompt to channel -7, and runs a
+                # full-volume refinement pass (force_full_refine=True).
                 self._session.add_initial_seg_interaction(
-                    initial_prompt_3d, run_prediction=True
+                    combined_prompt, run_prediction=True
                 )
-
-                # Step 2: IFL correction slices — one sequential scribble interaction
-                # per slice where the IFL loop substituted GT.  Each call triggers its
-                # own nnInteractive forward pass so the model iteratively refines its
-                # prediction, exactly mirroring how a human annotator would correct
-                # individual slices one at a time.
-                for idx in user_interacts_idx:
-                    interact_slice = np.take(seg_3d, idx, axis=prompt_axis)
-                    interact_3d    = np.zeros(img_4d.shape[1:], dtype=np.int16)
-                    if prompt_axis == 0:
-                        interact_3d[idx, :, :]  = interact_slice
-                    elif prompt_axis == 1:
-                        interact_3d[:, idx, :]  = interact_slice
-                    else:
-                        interact_3d[:, :, idx]  = interact_slice
-                    # include_interaction=True → positive scribble channel
-                    self._session.add_scribble_interaction(
-                        interact_3d, include_interaction=True, run_prediction=True
-                    )
-
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
                     print("[NNInteractiveInference] GPU OOM — clearing cache and retrying …")
                     torch.cuda.empty_cache()
-                    # Re-raise so the caller can decide whether to skip
                     raise
 
         # --- Retrieve & convert ---
