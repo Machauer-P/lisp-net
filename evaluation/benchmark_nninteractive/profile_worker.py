@@ -218,10 +218,10 @@ def _profile_nn(vol_info: dict) -> float:
 
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
     model_dir = Path(
-        _PROJECT_ROOT / 'evaluation' / 'benchmark_models' / 'nnInteractive' / 'nnInteractive'
+        _PROJECT_ROOT / 'evaluation' / 'benchmark_models' / 'nnInteractive' / 'nnInteractive_v1.0'
     )
-    if not model_dir.exists():
-        print(f'  Model dir not found: {model_dir} — falling back to auto-download')
+    if not (model_dir / 'inference_session_class.json').exists():
+        print(f'  Trained model not found at {model_dir} — falling back to auto-download')
         model_dir = None
 
     nn = NNInteractiveInference(model_dir=model_dir, device=device, verbose=False)
