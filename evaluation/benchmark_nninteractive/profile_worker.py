@@ -103,6 +103,13 @@ def _load_single_volume(npz_path: str, pid: str) -> dict | None:
 # Profile: Prompt U-Net
 # ======================================================================
 def _profile_punet(vol_info: dict) -> float:
+    import os
+    # Allow GPU memory growth so TF does not pre-allocate the entire VRAM.
+    # Must be set before TensorFlow is imported.
+    os.environ.setdefault('TF_FORCE_GPU_ALLOW_GROWTH', 'true')
+    # Reduce TF log verbosity (still shows errors).
+    os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
+
     import tensorflow as tf
     from inference.inference_volume import VolumeInference
     from inference.ssf import ConfidenceDropStrategy
@@ -143,21 +150,35 @@ def _profile_punet(vol_info: dict) -> float:
 
     model_path = str(_PROJECT_ROOT / 'training' / 'p_unet_332.keras')
 
-    vi = VolumeInference(
-        model_path=model_path,
-        modality=modality,
-        normalization='universal',
-        ssf_strategy=ConfidenceDropStrategy(drop_fraction=0.05),
-        buffer_size=4,
-        batch_size=6,
-    )
+    # ----------------------------------------------------------------
+    # Build model + run warm-up inside a try/except so a CuDNN version
+    # mismatch (or any other GPU init failure) produces a clear error
+    # message instead of a silent crash / 0.0 MB result.
+    # ----------------------------------------------------------------
+    try:
+        vi = VolumeInference(
+            model_path=model_path,
+            modality=modality,
+            normalization='universal',
+            ssf_strategy=ConfidenceDropStrategy(drop_fraction=0.05),
+            buffer_size=4,
+            batch_size=6,
+        )
 
-    # Warm-up
-    _ = vi.run(
-        img_3d=img_3d, seg_3d_binary=seg_3d_binary,
-        initial_prompt_2d_seg=prompt_2d,
-        prompt_axis=axis, prompt_idx=prompt_idx,
-    )
+        # Warm-up — absorbs JIT compilation / CuDNN workspace allocation
+        _ = vi.run(
+            img_3d=img_3d, seg_3d_binary=seg_3d_binary,
+            initial_prompt_2d_seg=prompt_2d,
+            prompt_axis=axis, prompt_idx=prompt_idx,
+        )
+    except Exception as exc:
+        # Surface a human-readable message so the caller can diagnose the
+        # problem (e.g. CuDNN version mismatch, OOM, missing model file).
+        raise SystemExit(
+            f'Prompt U-Net GPU initialisation failed: {type(exc).__name__}: {exc}\n'
+            f'Hint: check that the runtime CuDNN version matches the one TF '
+            f'was compiled against (see cuda_dnn.cc errors above).'
+        ) from exc
 
     # Measurement
     baseline = _gpu_used_mb()
@@ -260,10 +281,17 @@ def main():
 
     vol_info = json.loads(args.vol_info_json)
 
-    if args.model == 'punet':
-        peak_mb = _profile_punet(vol_info)
-    else:
-        peak_mb = _profile_nn(vol_info)
+    try:
+        if args.model == 'punet':
+            peak_mb = _profile_punet(vol_info)
+        else:
+            peak_mb = _profile_nn(vol_info)
+    except SystemExit as exc:
+        # Re-raise SystemExit so the shell return-code is non-zero, but first
+        # emit a parseable sentinel so the caller knows this is a failure (not
+        # a legitimate 0.0 MB measurement).
+        print('PEAK_MB: ERROR', flush=True)
+        raise
 
     # Single machine-parseable output line
     print(f'PEAK_MB: {peak_mb:.1f}')
