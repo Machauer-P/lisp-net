@@ -2,6 +2,30 @@
 
 This document tracks the evolution of the Prompt U-Net segmentation model, from architectural changes to preprocessing and data augmentation strategies.
 
+## [v333] - Hybrid Separable/Conv2D Convolutions
+*Implementation: `prompt_unet_333.py`, `optimizer.py`, `p_unet_333.ipynb`*
+
+**Research question:** Can a clever mixture of SeparableConv2D and Conv2D retain v332-quality segmentation while dramatically reducing parameters?
+
+**Architecture**
+- **Hybrid Convolution Strategy:** SeparableConv2D used for most intermediate layers; Conv2D selectively retained at three critical junctions:
+  1. **Strided downsampling** (stride=2, channels→2×) — channel mixing is essential before spatial reduction; depthwise on stride > 1 is channel-blind.
+  2. **Prompt fusion** (image branch conv before `Add` with SE-gated prompt skip) — the critical handshake between the two encoders.
+  3. **Bottleneck** (4×4×384) — at maximum abstraction with minimal spatial information, full Conv2D expressivity is worth the parameter cost.
+- All other intermediate convolutions (fixed-channel encoder blocks, decoder, upsample convs) use SeparableConv2D.
+- Input projections (1→48, 2→48) and final 1×1 output layer remain Conv2D.
+- **SE Attention:** enabled on all prompt skip connections (unchanged from v332).
+- **Filter schedule:** `[48, 96, 192, 256, 384]` (unchanged).
+- **Expected params:** ~10-12 M (vs 28.0 M for v332, ~4-5 M for v314's pure separable).
+
+**Identical to v332 otherwise**
+- BCE loss, 10,000-point training buffer, 30-epoch refresh cadence, `WarmupFlatCosineDecay` LR schedule, v319 datasets (208 patients), offset 16, float32 training.
+
+**Relationship to prior work**
+- v314 attempted **pure** SeparableConv2D and was later abandoned in v310 for pure Conv2D. v333 revisits separable convolutions with a more targeted approach, keeping Conv2D only where depthwise's channel independence is most harmful.
+
+---
+
 ## [v332] - **FINAL MODEL** — v316 + TopCoW + Scaled Training Buffer
 *Implementation: `prompt_unet_313.py`, `optimizer.py`, `p_unet_332.ipynb`, `train_332.py`*
 
