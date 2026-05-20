@@ -3,6 +3,14 @@ evaluation/benchmark_nninteractive/nninteractive_inference.py
 =============================================================
 Clean wrapper around the nnInteractive inference session.
 
+Metric fairness
+---------------
+Both ``vol_dice`` and ``window_dice`` are restricted to the axial range where
+the ground-truth binary volume has foreground (the GT bounding box along
+``prompt_axis``).  This makes these metrics directly comparable to Prompt U-Net,
+which naturally only processes slices within the ROI extent.  The unrestricted
+full-volume Dice is also returned as ``vol_dice_full`` for reference.
+
 nnInteractive lives at:
     evaluation/benchmark_models/nnInteractive/
 
@@ -254,8 +262,13 @@ class NNInteractiveInference:
         Returns
         -------
         dict with keys:
-            'vol_dice'     : float — volumetric Dice over the full 3-D volume.
-            'window_dice'  : float — mean slice Dice in ±window around prompt.
+            'vol_dice'     : float — volumetric Dice restricted to the GT-extent
+                             (slices where seg_3d has foreground along prompt_axis).
+                             Directly comparable to P-UNet's vol_dice.
+            'vol_dice_full': float — volumetric Dice over the full 3-D volume
+                             (kept for reference / regression checks).
+            'window_dice'  : float — mean slice Dice in ±window around prompt,
+                             also restricted to the GT extent.
             'result_volume': np.ndarray (X, Y, Z) uint8 — raw nnInteractive output.
         """
         import torch
@@ -312,13 +325,39 @@ class NNInteractiveInference:
         # --- Retrieve & convert ---
         result_np = np.asarray(target_tensor.clone(), dtype=np.int16)
 
-        vol_dice    = volumetric_dice(seg_3d, result_np)
-        window_dice = dice_window_nn(seg_3d, result_np, prompt_axis, prompt_idx, window=window)
+        # --- Dice restricted to the GT extent (fair comparison with P-UNet) ---
+        # P-UNet naturally only visits non-empty GT slices, so its vol_dice and
+        # window_dice never include background slices.  We apply the same crop
+        # here so the numbers are on the same footing.
+        sum_axes      = tuple(a for a in range(seg_3d.ndim) if a != prompt_axis)
+        gt_presence   = seg_3d.sum(axis=sum_axes) > 0   # True for each slice with foreground
+        gt_slice_idxs = np.where(gt_presence)[0]
+
+        vol_dice_full = volumetric_dice(seg_3d, result_np)   # full volume — reference only
+
+        if len(gt_slice_idxs) == 0:
+            # Degenerate: GT is empty — both metrics are trivially 1.0 / 1.0
+            vol_dice    = vol_dice_full
+            window_dice = vol_dice_full
+        else:
+            lo, hi = int(gt_slice_idxs[0]), int(gt_slice_idxs[-1]) + 1   # [lo, hi)
+            sl = [slice(None)] * seg_3d.ndim
+            sl[prompt_axis] = slice(lo, hi)
+            sl = tuple(sl)
+
+            vol_dice = volumetric_dice(seg_3d[sl], result_np[sl])
+
+            # Adjust the prompt index to be relative to the cropped volume
+            adj_prompt_idx = max(0, min(prompt_idx - lo, hi - lo - 1))
+            window_dice = dice_window_nn(
+                seg_3d[sl], result_np[sl], prompt_axis, adj_prompt_idx, window=window
+            )
 
         self._session.reset_interactions()
 
         return {
-            "vol_dice"     : vol_dice,
-            "window_dice"  : window_dice,
+            "vol_dice"     : vol_dice,       # GT-extent crop
+            "vol_dice_full": vol_dice_full,  # full volume (reference)
+            "window_dice"  : window_dice,    # GT-extent crop
             "result_volume": result_np,
         }

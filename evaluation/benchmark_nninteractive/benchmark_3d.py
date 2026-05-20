@@ -630,6 +630,7 @@ def run_benchmark(
 
                         nn_results[nn_key] = {
                             "vol_dice"       : nn_out["vol_dice"],
+                            "vol_dice_full"  : nn_out.get("vol_dice_full", nn_out["vol_dice"]),
                             "window_dice"    : nn_out["window_dice"],
                             "time_s"         : nn_t,
                             "n_interactions" : n_inter,  # incl. initial prompt
@@ -644,6 +645,7 @@ def run_benchmark(
                             print(
                                 f"      [{label:<16}]  "
                                 f"vol={nn_out['vol_dice']:.3f}  "
+                                f"(full={nn_out.get('vol_dice_full', nn_out['vol_dice']):.3f})  "
                                 f"win={nn_out['window_dice']:.3f}  "
                                 f"({nn_t:.1f}s)  n_inter={n_inter} (excl. initial)"
                             )
