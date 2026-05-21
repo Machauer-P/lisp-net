@@ -578,7 +578,7 @@ def run_benchmark(
                                 + len(result.forward_indices)
                                 + 1
                             ),
-                            "n_interactions"      : result.num_user_interacts,  # incl. initial prompt
+                            "n_interactions"      : result.num_user_interacts,
                             "user_interacts_idx"  : result.user_interacts_idx or [],
                             "ssf_strategy"        : result.ssf_strategy,
                             "gt_dice_threshold"   : result.gt_dice_threshold,
