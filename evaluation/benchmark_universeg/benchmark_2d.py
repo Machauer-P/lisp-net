@@ -348,9 +348,13 @@ class EvalPipeline2D:
                 print(f"  UniverSeg               Mean Dice : {avg_dice:.4f}  (Avg Time: {avg_time:.2f}s/dataset)")
 
         if output_file:
-            with open(output_file, 'wb') as f:
-                pickle.dump(results, f)
-            print(f"Results saved to {output_file}")
+            if not results:
+                print(f"WARNING: No results to save (no NPZ bundles found). "
+                      f"Output file '{output_file}' was NOT overwritten.")
+            else:
+                with open(output_file, 'wb') as f:
+                    pickle.dump(results, f)
+                print(f"Results saved to {output_file}")
 
         return results
 
