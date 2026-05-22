@@ -76,6 +76,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from utils.preprocessing import universal_normalization, min_max_norm, shaping
 from inference.tiling import TiledInference
 from utils.metrics import dice_score_tf
+from utils.model_loading import load_keras_model
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +270,7 @@ class VolumeInference:
             f"(norm='{self.normalization_mode}', modality_fallback={self.modality}, "
             f"batch_size={self.batch_size})"
         )
-        self.model = tf.keras.models.load_model(str(self.model_path))
+        self.model = load_keras_model(self.model_path)
 
         # JIT-compile the forward pass once.
         # The batch dimension is dynamic (None) so any number of tiles per slice
@@ -589,9 +590,12 @@ class VolumeInference:
                     float(prob_raw_k[fg].mean()) if fg.any() else 0.0
                 )
 
-                # Store native-resolution results
+                # Store native-resolution results.
+                # If IFL fired, the user corrected this slice with GT — store GT
+                # as the prediction (the interaction IS the prediction for this slice).
+                # Otherwise store the model's binary output.
                 ground_truths.append(gt_plane_k)
-                results.append(pred_native)
+                results.append(gt_plane_k.copy() if ifl_rollback else pred_native)
 
                 if ifl_rollback:
                     self._ssf.reset_trigger()  # reset strategy ref without clearing buffer
