@@ -35,7 +35,7 @@ from utils.augmentations import PromptUNetAugmenter
 from utils.metrics       import dice_score_tf
 # from utils.visualization import plot_result
 
-from training.prompt_unet_313 import PromptUNet          # v313 architecture
+from training.prompt_unet import PromptUNet          # v313 architecture
 from training.optimizer        import PromptUNetOptimizer  # WarmupFlatCosineDecay
 
 # ============================================================================
