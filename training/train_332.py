@@ -2,8 +2,6 @@
 Prompt U-Net v332 — Final Model — Standalone Training Script
 =============================================================
 
-Equivalent to p_unet_332.ipynb but runs headless (no Jupyter required).
-
 Usage (from project root or training/ directory):
     python training/train_332.py
 
@@ -35,7 +33,7 @@ from data.DataGenerator  import DataGenerator
 
 from utils.augmentations import PromptUNetAugmenter
 from utils.metrics       import dice_score_tf
-from utils.visualization import plot_result
+# from utils.visualization import plot_result
 
 from training.prompt_unet_313 import PromptUNet          # v313 architecture
 from training.optimizer        import PromptUNetOptimizer  # WarmupFlatCosineDecay
@@ -186,7 +184,6 @@ def main():
             "gamma_range"       : str(augmenter.gamma_range),
             "trainable_params"  : model.this.count_params(),
             "scale_augmentation": "50% crop 128px / 50% crop [128,256]px resized",
-            "leakage_fix"       : "crop origin from support label only",
             "se_attention"      : "enabled",
             "mixed_precision"   : "false",
             "datasets"          : "nako+total_seg+msd+brats_gli+brats_men_rt+TopCoW_MR+TopCoW_CT",
