@@ -1,11 +1,13 @@
-# Prompt U-Net: Clinician-Guided AI for Context-Aware Segmentation
+# LISP-Net (Lightweight In-Context Slice Propagator Network)
+
+> **Working name / formerly LISP-Net.** Renamed to avoid a naming conflict with an existing LISP-Net; the codebase still uses the original `prompt_unet` identifiers internally.
 
 [![Live Demo](https://img.shields.io/badge/Demo-Launch%20in%20Browser-green?style=for-the-badge)](https://www.nora-imaging.com/)
 [![Status](https://img.shields.io/badge/Paper-Preprint-blue?style=for-the-badge)](docs/p_unet_preprint_outdated.pdf)
 
 > **"A leap towards generalizable, lightweight, and user-controllable AI in clinical workflows."**
 
-Welcome to the code repository for **Prompt U-Net**, an interactive machine learning model for medical image segmentation based on prompts. **Here, you can build, train, and evaluate the model yourself.**
+Welcome to the code repository for **LISP-Net**, an interactive machine learning model for medical image segmentation based on prompts. **Here, you can build, train, and evaluate the model yourself.**
 
 If you simply want to try the model **without any installation or setup problems**, our interactive demo can be used directly in your browser via [Nora Imaging](https://www.nora-imaging.com/).
 
@@ -23,7 +25,7 @@ To bridge the gap between research and clinical application, the model is highly
 ### Watch the Demo or Try it Yourself
 - **YouTube Demo:** [Watch our one-minute demo video](https://youtu.be/pYGCIfeopFA)
 - **Interactive Demo:** Use it yourself on your device inside [Nora Imaging](https://www.nora-imaging.com/)
-  - **Currently uses Prompt U-Net V21, which is intended solely for MRI segmentation and is slower than the latest version.**
+  - **Currently uses LISP-Net V21, which is intended solely for MRI segmentation and is slower than the latest version.**
   - [Nora Imaging Documentation](https://www.nora-imaging.org/doc)
   1. Press 'M' to memorize the segmentation you made.
   2. Press 'N' on another slice of the same axis to create a segmentation.
@@ -33,7 +35,7 @@ To bridge the gap between research and clinical application, the model is highly
 
 ## 💡 Scientific Core Innovation & Features
 
-Prompt U-Net transforms static segmentation into an **interactive, context-aware process**. Unlike "black-box" models, it leverages **In-Context Learning** to adapt to unseen anatomical structures using minimal data, while outperforming UniverSeg and rivaling the performance of nnInteractive, all with significantly lower computational complexity and memory footprint.
+LISP-Net transforms static segmentation into an **interactive, context-aware process**. Unlike "black-box" models, it leverages **In-Context Learning** to adapt to unseen anatomical structures using minimal data, while outperforming UniverSeg and rivaling the performance of nnInteractive, all with significantly lower computational complexity and memory footprint.
 
 **Features:**
 - **Dual-Encoder Architecture:** Simultaneously processes a medical image and a 2D user-provided prompt, with a dedicated conditioning mechanism.
@@ -43,7 +45,7 @@ Prompt U-Net transforms static segmentation into an **interactive, context-aware
 - **Data Efficiency:** Rivaling top-tier baselines like nnInteractive while requiring significantly less data.
 
 <br>
-<img src="docs/p_unet_architecture.png" style="width: 100%;" alt="Prompt U-Net Architecture">
+<img src="docs/p_unet_architecture.png" style="width: 100%;" alt="LISP-Net Architecture">
 <br>
 
 ---
@@ -54,8 +56,8 @@ This repository structure emphasizes modularity, clearly separating data loading
 
 ### 1. Clone the repository:
 ```bash
-git clone https://github.com/Machauer-P/prompt-unet
-cd prompt-unet
+git clone https://github.com/Machauer-P/lisp-net
+cd lisp-net
 ```
 
 ### 2. Set up a virtual environment:
@@ -83,11 +85,11 @@ pip install -r requirements_eval.txt
 
 - **`data/`**: Core dataset processing scripts and data loaders (e.g., `DataGenerator.py`, `DataLoader_npz.py`). Contains Jupyter notebooks to explore data augmentations, visualize datasets, and scripts to process raw medical data into efficient `.npz` records. Use this folder to manage and prepare all training and evaluation data.
 - **`inference/`**: Modules for running predictions with trained models. Includes the core inference classes (e.g., `inference_volume.py`), logic for adaptive spatial tiling (`tiling.py`), and the Self-Supervised Feedback mechanism (`ssf.py`) that intelligently enforces volumetric consistency across 3D image slices without human intervention.
-- **`training/`**: The main hub for defining and training Prompt U-Net. Contains all neural network architecture variants (`prompt_unet_*.py`), custom optimizers, logging configurations, and Jupyter Notebooks (e.g., `p_unet_*.ipynb`) used to run historical and active training experiments. Trained `.keras` model weights are built and stored here.
+- **`training/`**: The main hub for defining and training LISP-Net. Contains all neural network architecture variants (`prompt_unet_*.py`), custom optimizers, logging configurations, and Jupyter Notebooks (e.g., `p_unet_*.ipynb`) used to run historical and active training experiments. Trained `.keras` model weights are built and stored here.
 - **`utils/`**: Reusable helper modules that handle common operations across the codebase. Includes utilities for image processing, specialized data augmentations, visualization routines, and measuring performance metrics.
-- **`evaluation/`**: Scripts, pipeline tools, and Jupyter notebooks explicitly designed for robust benchmarking. Use this to analyze the performance of Prompt U-Net against competing baselines (such as nnInteractive and UniverSeg) and generate comparative statistics across anatomical tasks.
+- **`evaluation/`**: Scripts, pipeline tools, and Jupyter notebooks explicitly designed for robust benchmarking. Use this to analyze the performance of LISP-Net against competing baselines (such as nnInteractive and UniverSeg) and generate comparative statistics across anatomical tasks.
 - **`deployment/`**: Web-based deployment tools. Contains scripts (e.g., `keras_to_tf_js.py`) to convert trained `.keras` format models into TensorFlow.js graph models, alongside basic HTML/JS/CSS assets for an interactive browser-based testing demonstration.
-- **`docs/`**: Relevant documents such as architectural diagrams, preprints, and research to provide a theoretical understanding of the Prompt U-Net model and its underlying methodology.
+- **`docs/`**: Relevant documents such as architectural diagrams, preprints, and research to provide a theoretical understanding of the LISP-Net model and its underlying methodology.
 
 ---
 
@@ -97,7 +99,7 @@ pip install -r requirements_eval.txt
 To train a brand new model or continue training, navigate to the `training/` directory. Open the latest notebook (e.g., `p_unet_292.ipynb`). Ensure your data is correctly populated in `data/train_data/`. The notebooks are designed interactively to configure hyperparameters, instantiate the model via `models/prompt_unet.py`, load data using generators from `data/`, and run training loops.
 
 ### 2. Evaluating Models
-Once you have trained your Prompt U-Net, you can assess its performance. Ensure you have installed the dependencies via `requirements_eval.txt`. Check the folders inside `evaluation/` for specific run instructions depending on the chosen benchmark.
+Once you have trained your LISP-Net, you can assess its performance. Ensure you have installed the dependencies via `requirements_eval.txt`. Check the folders inside `evaluation/` for specific run instructions depending on the chosen benchmark.
 
 ### 3. Model Inference, Exporting & Deployment
 Once trained, the `.keras` model can be utilized in several ways:
@@ -109,7 +111,7 @@ Once trained, the `.keras` model can be utilized in several ways:
 
 ## 🔬 Technical Documentation & Publication
 
-For an in-depth discussion, please refer to our preprint on version 21 of the Prompt U-Net:
+For an in-depth discussion, please refer to our preprint on version 21 of the LISP-Net:
 
 **[Read Preprint](docs/p_unet_preprint_outdated.pdf)**
 
