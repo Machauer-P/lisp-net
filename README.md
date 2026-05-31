@@ -23,7 +23,7 @@ To bridge the gap between research and clinical application, the model is highly
 3. **In-context learning:** Perfect for real-time interaction during imaging or screening.
 
 ### Watch the Demo or Try it Yourself
-- **YouTube Demo:** [Watch our one-minute demo video](https://youtu.be/pYGCIfeopFA)
+- **YouTube Demo:** [Watch our demo video](https://www.youtube.com/watch?v=DFkN3o8yA4w)
 - **Interactive Demo:** Use it yourself on your device inside [Nora Imaging](https://www.nora-imaging.com/)
   - **Currently uses LISP-Net V21, which is intended solely for MRI segmentation and is slower than the latest version.**
   - [Nora Imaging Documentation](https://www.nora-imaging.org/doc)
