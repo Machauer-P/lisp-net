@@ -25,11 +25,7 @@ To bridge the gap between research and clinical application, the model is highly
 ### Watch the Demo or Try it Yourself
 - **YouTube Demo:** [Watch our demo video](https://www.youtube.com/watch?v=DFkN3o8yA4w)
 - **Interactive Demo:** Use it yourself on your device inside [Nora Imaging](https://www.nora-imaging.com/)
-  - **Currently uses LISP-Net V21, which is intended solely for MRI segmentation and is slower than the latest version.**
-  - [Nora Imaging Documentation](https://www.nora-imaging.org/doc)
-  1. Press 'M' to memorize the segmentation you made.
-  2. Press 'N' on another slice of the same axis to create a segmentation.
-  3. Proceed if the result meets your expectations. If not, edit it and memorize it.
+  - Read the [Nora Imaging (LISP-Net) Documentation](https://reisertm.github.io/noradoc/chapters/segmentation-assistant-lisp-net.html) first
 
 ---
 
