@@ -115,9 +115,9 @@ def main():
         prob_noise             = 0.40,
         prob_independent_noise = 0.50,
         prob_geometric         = 0.50,
-        prob_morph             = 0.30,
-        prob_dropout           = 0.40,
-        prob_false_pos         = 0.60,
+        prob_morph             = 0.0,
+        prob_dropout           = 0.40, # Other prompt corruptions tend to harm prediction quality
+        prob_false_pos         = 0.0,
         gamma_range                 = (0.85, 1.25),
         noise_std_range             = (0.0, 0.10),
         independent_noise_std_range = (0.0, 0.01),
