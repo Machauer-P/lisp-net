@@ -232,6 +232,8 @@ class VolumeInference:
         'CT' or 'MRI'.  Used only when normalization resolves to 'universal'.
     output_threshold : float
         Sigmoid threshold applied to model output to produce binary masks.
+    ssf_strategy : BaseSSFStrategy or None
+        SSF trigger strategy.  ``None`` disables SSF.
     buffer_size : int
         Number of recent predictions kept in the SSF rolling buffer.
         Default 6.
@@ -254,7 +256,7 @@ class VolumeInference:
         output_threshold: float = 0.5,
         ssf_strategy: Optional[BaseSSFStrategy] = None,
         buffer_size: int = 4,
-        batch_size: int = 3,
+        batch_size: int = 6,
         tile_trigger_fraction: float = 0.75,
     ):
         self.model_path         = Path(model_path)
@@ -496,18 +498,12 @@ class VolumeInference:
 
             # ----------------------------------------------------------------
             # Batch ALL tiles from ALL slices in this window into one GPU pass.
-            #
-            # Why: the original code batched multiple slices in one forward
-            # pass (batch_size slices × 1 tile).  With tiling, each slice may
-            # have N tiles.  We combine all slices × all tiles into a single
-            # _fast_batch_fn call so GPU utilisation is maximised.
-            #
-            # All slices in a batch share the same prompt (cur_prompt_img /
-            # cur_prompt_mask), so the tile plan is identical for every slice.
+            # All b slices in a batch share the same prompt, so the prompt
+            # encoder only runs T times (once per tile) instead of B×T times.
             # ----------------------------------------------------------------
             tile_starts = self._tiler._plan_tiles(
                 cur_prompt_mask, *batch_planes[0].shape
-            )  # list of (y0, x0) — same for all slices since prompt is shared
+            )
             n_tiles = len(tile_starts)
 
             # Build mega-batch: (b * n_tiles, 128, 128, 1/2)
