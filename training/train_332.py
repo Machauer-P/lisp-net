@@ -31,7 +31,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 from data.DataLoader_npz import DataLoader_npz
 from data.DataGenerator  import DataGenerator
 
-from utils.augmentations import PromptUNetAugmenter
+from training.augmentations import PromptUNetAugmenter
 from utils.metrics       import dice_score_tf
 # from utils.visualization import plot_result
 

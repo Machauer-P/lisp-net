@@ -32,7 +32,7 @@ Usage Examples:
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir))
 
-from utils.augmentations import PromptUNetAugmenter
+from training.augmentations import PromptUNetAugmenter
 from data.DataGenerator import DataGenerator
 from data.DataLoader_npz import DataLoader_npz
 
