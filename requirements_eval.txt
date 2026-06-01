@@ -6,7 +6,7 @@ pydantic==2.12.5
 
 # Core ML and Data processing
 tensorflow==2.21.0
-tensorflowjs==4.22.0
+# tensorflowjs==4.22.0  # not needed for eval; has windows wheel conflict with tf==2.21
 numpy==2.2.6
 scipy==1.15.3
 pandas==2.3.3
