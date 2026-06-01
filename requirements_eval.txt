@@ -18,6 +18,10 @@ simpleitk==2.5.3
 matplotlib==3.10.8
 mlflow==3.11.1
 
+# Deployment / ONNX export
+tf2onnx==1.17.0
+onnx==1.21.0
+
 # Notebook support
 ipykernel==7.2.0
 huggingface_hub==1.11.0
