@@ -242,10 +242,6 @@ class VolumeInference:
         batch all use the same prompt; if SSF or IFL fires mid-batch, slices
         after the trigger are rolled back and re-predicted with the updated
         prompt.  Default 3.
-    tile_trigger_fraction : float
-        Passed to ``TiledInference``.  If the prompt bbox on a given axis
-        exceeds ``128 * tile_trigger_fraction`` pixels, tiling is applied
-        on that axis.  Default 0.75.
     """
 
     def __init__(
@@ -257,7 +253,6 @@ class VolumeInference:
         ssf_strategy: Optional[BaseSSFStrategy] = None,
         buffer_size: int = 4,
         batch_size: int = 6,
-        tile_trigger_fraction: float = 0.75,
     ):
         self.model_path         = Path(model_path)
         self.normalization_mode = _resolve_normalization(model_path, normalization)
@@ -291,10 +286,7 @@ class VolumeInference:
         print("[VolumeInference] Graph compiled (warm-up done).")
 
         # Tiler — reused across all slices (stateless weight computation)
-        self._tiler = TiledInference(
-            tile_size=128,
-            tile_trigger_fraction=tile_trigger_fraction,
-        )
+        self._tiler = TiledInference(tile_size=128)
 
     def set_ssf_strategy(self, strategy: Optional[BaseSSFStrategy]) -> None:
         """

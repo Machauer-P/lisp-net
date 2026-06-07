@@ -7,7 +7,7 @@ Algorithm (matches KSegmentation.js ``testTFJS``, lines 1556-1941)
 -------------------------------------------------------------------
 1.  Compute the bounding box of the prompt mask on the current 2-D plane.
 2.  Decide per-axis tiling:
-      • bbox extent > tile_size * tile_trigger_fraction  →  tile that axis.
+      • bbox extent > tile_size  →  tile that axis.
       • smaller bbox (or no bbox)                        →  single centered tile.
 3.  ``compute_adaptive_starts``  — minimum-count tile coverage of the bbox.
 4.  Extract ``(tile_size, tile_size)`` patches (with edge-clamping for OOB).
@@ -62,21 +62,13 @@ class TiledInference:
     ----------
     tile_size : int
         Model input spatial size.  Must be 128 for Prompt-UNet.
-    tile_trigger_fraction : float
-        If the prompt bbox extent on a given axis exceeds
-        ``tile_size * tile_trigger_fraction``, multiple tiles are placed
-        along that axis.  Otherwise a single centered tile is used.
-        Default 0.75 (= 96 px for tile_size=128).
     """
 
     def __init__(
         self,
         tile_size: int = 128,
-        tile_trigger_fraction: float = 0.75,
     ):
-        self.tile_size             = tile_size
-        self.tile_trigger_fraction = tile_trigger_fraction
-        self._trigger_px           = tile_size * tile_trigger_fraction
+        self.tile_size = tile_size
 
         # Pre-compute 1-D tent weights: w[i] = 0.1 + 0.9*(1 - |t|), t in [-1,1]
         # These are the same weights used in KSegmentation.js.
@@ -185,8 +177,7 @@ class TiledInference:
         * No visible prompt → full regular coverage.
         * Prompt found     → adaptive minimum-tile coverage per axis.
         """
-        T   = self.tile_size
-        trig = self._trigger_px
+        T    = self.tile_size
         bbox = _compute_mask_bbox(prompt_mask_plane, threshold=0.5)
 
         if bbox is None:
@@ -194,8 +185,8 @@ class TiledInference:
             y_starts = _compute_tile_starts(H, T, T)
             x_starts = _compute_tile_starts(W, T, T)
         else:
-            tile_y = (bbox["maxY"] - bbox["minY"] + 1) > trig
-            tile_x = (bbox["maxX"] - bbox["minX"] + 1) > trig
+            tile_y = (bbox["maxY"] - bbox["minY"] + 1) > T
+            tile_x = (bbox["maxX"] - bbox["minX"] + 1) > T
             y_starts = _compute_adaptive_starts(
                 H, T, T,
                 bbox["minY"], bbox["maxY"],
