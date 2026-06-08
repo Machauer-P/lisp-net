@@ -14,7 +14,6 @@ if str(_HERE) not in sys.path:
 
 from inference.tiling import TiledInference
 
-
 from utils.model_loading import load_keras_model
 
 
@@ -65,18 +64,22 @@ class PromptUNetPredictor:
        This class does **NOT** normalize raw medical data (e.g. it does NOT
        clip Hounsfield units or apply MRI percentiles). It assumes inputs are
        **already precisely normalized** to the range expected by the loaded
-       Prompt-UNet model (usually a z-score clipped to ``[-5, 5]`` for 
-       'universal' models >= v292, or ``[0, 1]`` for legacy models). 
-       
+       Prompt-UNet model (usually a z-score clipped to ``[-5, 5]`` for
+       'universal' models >= v292, or ``[0, 1]`` for legacy models).
+
        Passing raw intensities directly into ``predict()`` will silently
        yield garbage predictions. If you are predicting on raw 3D medical
-       volumes, use ``inference_volume.VolumeInference`` instead, which 
+       volumes, use ``inference_volume.VolumeInference`` instead, which
        handles normalization automatically via the ``modality`` parameter.
 
     Parameters
     ----------
-    model_path_or_obj : str, Path, or tf.keras.Model
-        Path to a saved ``.keras`` model file, or a pre-loaded model.
+    model_path_or_obj : str, Path, tf.keras.Model, or None
+        - ``None`` (default) — downloads from Hugging Face
+          (``Machauer-P/lisp-net``).
+        - ``user/repo`` — downloads from that HF repo.
+        - local ``.keras`` file — loaded from disk.
+        - pre-loaded ``tf.keras.Model`` — used directly.
     """
 
     def __init__(self, model_path_or_obj):

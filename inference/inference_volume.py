@@ -183,10 +183,7 @@ def _resolve_normalization(model_path: str | Path, normalization: str) -> str:
             return "universal" if version >= _LEGACY_BOUNDARY else "legacy"
         except ValueError:
             continue
-    print(
-        f"[VolumeInference] WARNING: could not extract version number from "
-        f"'{Path(model_path).name}'. Defaulting to 'universal' normalization."
-    )
+    # No version in path (e.g. HF repo ID) — default to universal (v292+)
     return "universal"
 
 

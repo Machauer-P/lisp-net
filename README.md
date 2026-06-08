@@ -3,9 +3,10 @@
 > The codebase uses the working name `prompt_unet` for internal identifiers — this is the same model.
 
 [![Live Demo](https://img.shields.io/badge/Demo-Launch%20in%20Browser-green?style=for-the-badge)](https://www.nora-imaging.com/)
-[![Status](https://img.shields.io/badge/Paper-Preprint-blue?style=for-the-badge)](docs/p_unet_preprint_outdated.pdf)
+[![Paper](https://img.shields.io/badge/Paper-Preprint-blue?style=for-the-badge)](docs/p_unet_preprint_outdated.pdf)
+[![Hugging Face](https://img.shields.io/badge/🤗%20Model-Hugging%20Face-orange?style=for-the-badge)](https://huggingface.co/Machauer-P/lisp-net)
 
-LISP-Net is a lightweight, purely convolutional framework optimized for interactive volumetric medical image segmentation. Rather than relying on sparse clicks, the model uses a single, dense 2D prompt — a reference image paired with a full segmentation mask — to derive structural guidance directly from the individual patient. The approach utilizes an asymmetrical dual-encoder architecture with multi-resolution conditioning, an adaptive tiling strategy, and a Self-Supervised Feedback (SSF) mechanism to automatically detect and mitigate structural drift during 3D propagation. The model is built with TensorFlow/Keras 3 and deployed via ONNX in-browser at [Nora Imaging](https://www.nora-imaging.com/).
+LISP-Net is a lightweight, purely convolutional framework optimized for interactive volumetric medical image segmentation. Rather than relying on sparse clicks, the model uses a single, dense 2D prompt — a reference image paired with a full segmentation mask — to derive structural guidance directly from the individual patient. The approach utilizes an asymmetrical dual-encoder architecture with multi-resolution conditioning, an adaptive tiling strategy, and a Self-Supervised Feedback (SSF) mechanism to automatically detect and mitigate structural drift during 3D propagation. The model is built with TensorFlow/Keras 3 and deployed via ONNX in-browser at [Nora Imaging](https://www.nora-imaging.com/). Pre-trained weights are available on [Hugging Face](https://huggingface.co/Machauer-P/lisp-net) as `.keras` and `.onnx`.
 
 If you simply want to try the model **without any installation or setup**, our interactive demo runs directly in your browser — no Python, no GPU, no Docker required.
 

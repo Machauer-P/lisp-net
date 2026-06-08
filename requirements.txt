@@ -16,5 +16,8 @@ mlflow==3.11.1
 tf2onnx==1.17.0
 onnx==1.21.0
 
+# Hugging Face model download
+huggingface_hub==1.11.0
+
 # Notebook support
 ipykernel==7.2.0

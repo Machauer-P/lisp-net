@@ -97,13 +97,8 @@ class EvalPipeline2D:
 
         return model
 
-    def load_prompt_unet(self, model_version='292'):
-        """Load a saved Prompt-UNet .keras model."""
-        model_path = PROJECT_ROOT / f'training/p_unet_{model_version}.keras'
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"Prompt U-Net model not found at {model_path}"
-            )
+    def load_prompt_unet(self, model_path):
+        """Load a Prompt-UNet model from a local path or Hugging Face repo ID."""
         return PromptUNetPredictor(model_path)
 
     # ------------------------------------------------------------------
@@ -290,16 +285,16 @@ class EvalPipeline2D:
     # Full pipeline
     # ------------------------------------------------------------------
 
-    def run_full_evaluation(self, data_path, model_name, p_unet_version='315', batch_size=32, output_file=None):
+    def run_full_evaluation(self, data_path, model_name, p_unet_model=None, batch_size=32, output_file=None):
         """Discover all NPZ bundles, run inference, and print results.
 
         Parameters
         ----------
         data_path      : str or Path  — directory containing NPZ bundles
         model_name     : str          — 'prompt_unet' or 'universeg'
-        p_unet_version : str          — model version suffix (e.g. '292')
+        p_unet_model   : str or None  — local .keras path or Hugging Face repo ID
         output_file    : str or None  — if given, pickle results here
-        
+
         Returns
         -------
         list of dicts with keys 'index', 'name', 'model', 'dice', 'time'
@@ -316,7 +311,7 @@ class EvalPipeline2D:
 
         print(f"Loading '{model_name}' model...")
         if model_name == 'prompt_unet':
-            model = self.load_prompt_unet(p_unet_version)
+            model = self.load_prompt_unet(p_unet_model)
         elif model_name == 'universeg':
             model = self.load_universeg()
         else:
@@ -333,7 +328,7 @@ class EvalPipeline2D:
                 'time':  time_taken,
                 'task':  task_id,
             })
-            
+
             # Ensure memory traces from last pair are purged
             self._sync_and_clean_memory()
 
@@ -343,7 +338,7 @@ class EvalPipeline2D:
 
             print(f"\nFinal Results for {model_name}:")
             if model_name == 'prompt_unet':
-                print(f"  Prompt U-Net (V{p_unet_version}) Mean Dice : {avg_dice:.4f}  (Avg Time: {avg_time:.2f}s/dataset)")
+                print(f"  Prompt U-Net ({p_unet_model or 'HF default'}) Mean Dice : {avg_dice:.4f}  (Avg Time: {avg_time:.2f}s/dataset)")
             else:
                 print(f"  UniverSeg               Mean Dice : {avg_dice:.4f}  (Avg Time: {avg_time:.2f}s/dataset)")
 
@@ -378,8 +373,8 @@ if __name__ == "__main__":
         help="Directory containing NPZ bundles.",
     )
     parser.add_argument(
-        "--p_unet_version", type=str, default="292",
-        help="Prompt-UNet model version suffix.",
+        "--p_unet_model", type=str, default=None,
+        help="Prompt-UNet model: local .keras path or Hugging Face repo ID (default: HF).",
     )
     parser.add_argument(
         "--batch_size", type=int, default=32,
@@ -396,4 +391,4 @@ if __name__ == "__main__":
         args.output = f"evaluation/benchmark_universeg/eval_results_{args.model}.pkl"
 
     pipeline = EvalPipeline2D()
-    pipeline.run_full_evaluation(args.data_path, args.model, args.p_unet_version, args.batch_size, args.output)
+    pipeline.run_full_evaluation(args.data_path, args.model, args.p_unet_model, args.batch_size, args.output)
