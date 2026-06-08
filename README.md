@@ -1,44 +1,48 @@
 # LISP-Net (Lightweight In-Context Slice Propagator Network)
 
-> **Working name / formerly LISP-Net.** Renamed to avoid a naming conflict with an existing LISP-Net; the codebase still uses the original `prompt_unet` identifiers internally.
+> The codebase uses the working name `prompt_unet` for internal identifiers — this is the same model.
 
 [![Live Demo](https://img.shields.io/badge/Demo-Launch%20in%20Browser-green?style=for-the-badge)](https://www.nora-imaging.com/)
 [![Status](https://img.shields.io/badge/Paper-Preprint-blue?style=for-the-badge)](docs/p_unet_preprint_outdated.pdf)
 
-> **"A leap towards generalizable, lightweight, and user-controllable AI in clinical workflows."**
+LISP-Net is a lightweight, purely convolutional framework optimized for interactive volumetric medical image segmentation. Rather than relying on sparse clicks, the model uses a single, dense 2D prompt — a reference image paired with a full segmentation mask — to derive structural guidance directly from the individual patient. The approach utilizes an asymmetrical dual-encoder architecture with multi-resolution conditioning, an adaptive tiling strategy, and a Self-Supervised Feedback (SSF) mechanism to automatically detect and mitigate structural drift during 3D propagation. The model is built with TensorFlow/Keras 3 and deployed via ONNX in-browser at [Nora Imaging](https://www.nora-imaging.com/).
 
-Welcome to the code repository for **LISP-Net**, an interactive machine learning model for medical image segmentation based on prompts. **Here, you can build, train, and evaluate the model yourself.**
+If you simply want to try the model **without any installation or setup**, our interactive demo runs directly in your browser — no Python, no GPU, no Docker required.
 
-If you simply want to try the model **without any installation or setup problems**, our interactive demo can be used directly in your browser via [Nora Imaging](https://www.nora-imaging.com/).
+### Watch the Demo or Try it Yourself
+- **YouTube Demo:** [Watch our demo video](https://www.youtube.com/watch?v=DFkN3o8yA4w)
+- **Interactive Demo:** Use it yourself at [Nora Imaging](https://www.nora-imaging.com/)
+  - Read the [Nora Imaging Documentation](https://reisertm.github.io/noradoc/chapters/segmentation-assistant-lisp-net.html) first
+
+<br>
+<img src="docs/visual_abstract/visual_abstract.png" style="width: 100%;" alt="LISP-Net Visual Abstract">
+
+*Overview of segmentation paradigms.* **(Upper left)** *Classic supervised ML trains a fixed model per task and fails on unseen tasks.* **(Lower left)** *Standard in-context learning uses prompts to define new tasks but offers no correction mechanism.* **(Right)** *LISP-Net combines interactive ICL with a single dense 2D prompt. Within-volume visual correspondence propagates the user's annotation with strong alignment to the user's intent and high accuracy over medium-range offsets. Structural drift is handled automatically by SSF or manually by the user, both of which refresh the prompt context.*
+<br>
 
 ---
 
 ## 🚀 Interactive Demo & Clinical Accessibility
 
-To bridge the gap between research and clinical application, the model is highly optimized and deployed using TensorFlow.js. We demonstrate that, compared to resource-intensive models, high-fidelity segmentation can be achieved locally on standard consumer hardware.
+To bridge the gap between research and clinical application, LISP-Net is deployed via ONNX and runs entirely client-side in the browser — no server round-trips, no data leaving the machine. In the native Python inference pipeline, peak GPU memory consumption is 164–362 MB, with per-slice latency of approximately 14 ms on GPU and 150 ms on CPU.
 
 **Why this matters for Clinicians/Researchers:**
-1. **Zero-Setup:** No Python/Docker/GPU drivers needed. Works instantly in any browser via Nora Imaging.
+1. **Zero-Setup:** No Python, Docker, or GPU drivers needed. Works instantly in any browser via Nora Imaging.
 2. **Data Privacy:** Full **client-side inference**. Medical data never leaves the local machine.
-3. **In-context learning:** Perfect for real-time interaction during imaging or screening.
-
-### Watch the Demo or Try it Yourself
-- **YouTube Demo:** [Watch our demo video](https://www.youtube.com/watch?v=DFkN3o8yA4w)
-- **Interactive Demo:** Use it yourself on your device inside [Nora Imaging](https://www.nora-imaging.com/)
-  - Read the [Nora Imaging (LISP-Net) Documentation](https://reisertm.github.io/noradoc/chapters/segmentation-assistant-lisp-net.html) first
+3. **Prompt-Driven Control:** A single dense 2D prompt defines the target — the model follows the user's annotation intent rather than defaulting to memorized anatomical priors.
 
 ---
 
-## 💡 Scientific Core Innovation & Features
+## 💡 Core Innovation & Features
 
-LISP-Net transforms static segmentation into an **interactive, context-aware process**. Unlike "black-box" models, it leverages **In-Context Learning** to adapt to unseen anatomical structures using minimal data, while outperforming UniverSeg and rivaling the performance of nnInteractive, all with significantly lower computational complexity and memory footprint.
+LISP-Net is a **purely convolutional framework** for interactive volumetric segmentation. Instead of sparse clicks, it conditions on a single dense 2D anchor prompt and propagates the annotation intent through within-volume visual correspondence rather than memorized anatomical priors. In 2D benchmarks it outperforms UniverSeg by 23.73% at mid-range offsets; in 3D it exceeds nnInteractive by 8.52% in volumetric Dice under simulated user interaction, with further advantages on out-of-distribution data.
 
-**Features:**
-- **Dual-Encoder Architecture:** Simultaneously processes a medical image and a 2D user-provided prompt, with a dedicated conditioning mechanism.
-- **In-Context Learning:** Enables rapid adaptation to new tasks without retraining.
-- **Self-Supervised Feedback (SSF):** Automatically ensures volumetric consistency. The model uses its own predictions from adjacent slices as internal "context" to refine the current segmentation without human intervention *(not yet in Browser Demo)*.
-- **Interactive Feedback (IF):** Enables "Human-in-the-loop" refinement. A clinician can provide a manual correction on a missegmented area, which is instantly used to update and improve future masks.
-- **Data Efficiency:** Rivaling top-tier baselines like nnInteractive while requiring significantly less data.
+**Key Contributions:**
+- **Asymmetrical Dual-Encoder:** A heavy Prompt Encoder extracts structural semantics from a dense 2D prompt (reference image + full mask). Multi-resolution SE channel-attention fuses these features into the Query Encoder at each stage.
+- **Efficient & Lightweight:** ~28M parameters, adaptive tiling, peak GPU memory of 164–362 MB, per-slice latency of ~14 ms (GPU) / ~150 ms (CPU). Runs client-side in standard web browsers on consumer hardware.
+- **Self-Supervised Feedback (SSF):** Automatically detects structural drift during 3D propagation via confidence monitoring and refreshes the prompt context without ground-truth annotations.
+- **Interactive Feedback (IFL):** A clinician corrects a missegmented slice; it becomes a fresh dense prompt to update all subsequent predictions.
+- **Out-of-Distribution Robustness:** An MRI-only variant retains accuracy on CT; a head-only variant segments body anatomy. The model follows the prompt, not the training prior.
 
 <br>
 <img src="docs/p_unet_architecture.png" style="width: 100%;" alt="LISP-Net Architecture">
@@ -46,9 +50,7 @@ LISP-Net transforms static segmentation into an **interactive, context-aware pro
 
 ---
 
-## 🛠️ Code Repository & Getting Started
-
-This repository structure emphasizes modularity, clearly separating data loading, training pipelines, model architecture, evaluation baselines, and web deployment.
+## 🛠️ Getting Started
 
 ### 1. Clone the repository:
 ```bash
@@ -60,17 +62,17 @@ cd lisp-net
 ```bash
 python -m venv .venv
 # On Linux/macOS:
-source .venv/bin/activate  
+source .venv/bin/activate
 # On Windows:
 .venv\Scripts\activate
 ```
 
 ### 3. Install dependencies:
-For core ML, data processing, and training, install the default requirements:
+For core ML, training, and inference:
 ```bash
 pip install -r requirements.txt
 ```
-If you plan to run evaluations against external benchmark models (like **nnInteractive** or **UniverSeg**), which require PyTorch and specific evaluation libraries, use:
+For evaluation against external benchmarks (nnInteractive, UniverSeg — requires PyTorch):
 ```bash
 pip install -r requirements_eval.txt
 ```
@@ -79,37 +81,125 @@ pip install -r requirements_eval.txt
 
 ## 📂 Project Structure
 
-- **`data/`**: Core dataset processing scripts and data loaders (e.g., `DataGenerator.py`, `DataLoader_npz.py`). Contains Jupyter notebooks to explore data augmentations, visualize datasets, and scripts to process raw medical data into efficient `.npz` records. Use this folder to manage and prepare all training and evaluation data.
-- **`inference/`**: Modules for running predictions with trained models. Includes the core inference classes (e.g., `inference_volume.py`), logic for adaptive spatial tiling (`tiling.py`), and the Self-Supervised Feedback mechanism (`ssf.py`) that intelligently enforces volumetric consistency across 3D image slices without human intervention.
-- **`training/`**: The main hub for defining and training LISP-Net. Contains all neural network architecture variants (`prompt_unet_*.py`), custom optimizers, logging configurations, and Jupyter Notebooks (e.g., `p_unet_*.ipynb`) used to run historical and active training experiments. Trained `.keras` model weights are built and stored here.
-- **`utils/`**: Reusable helper modules that handle common operations across the codebase. Includes utilities for image processing, specialized data augmentations, visualization routines, and measuring performance metrics.
-- **`evaluation/`**: Scripts, pipeline tools, and Jupyter notebooks explicitly designed for robust benchmarking. Use this to analyze the performance of LISP-Net against competing baselines (such as nnInteractive and UniverSeg) and generate comparative statistics across anatomical tasks.
-- **`deployment/`**: Web-based deployment tools. Contains scripts (e.g., `keras_to_tf_js.py`) to convert trained `.keras` format models into TensorFlow.js graph models, alongside basic HTML/JS/CSS assets for an interactive browser-based testing demonstration.
-- **`docs/`**: Relevant documents such as architectural diagrams, preprints, and research to provide a theoretical understanding of the LISP-Net model and its underlying methodology.
+```
+.
+├── data/                       # Data loading, preprocessing & dataset generation
+│   ├── DataLoader_npz.py       # Loads NPZ files into RAM, provides dataset dict to DataGenerator
+│   ├── DataGenerator.py        # Samples patches, z-score normalization, label-guided 128×128 cropping
+│   ├── train_data/             # Scripts to convert raw medical data → training NPZ files
+│   └── test_data/              # Scripts to convert raw medical data → test NPZ files
+│
+├── training/                   # Model definitions & training scripts
+│   ├── prompt_unet.py          # Current model architecture definition
+│   ├── train_332.py            # Final benchmark training script (v332)
+│   ├── optimizer.py            # WarmupFlatCosineDecay LR schedule
+│   ├── augmentations.py        # Photometric, geometric & morphological augmentations
+│   └── CHANGELOG.md            # Full model version history (v21 → v340)
+│
+├── inference/                  # Prediction pipeline & post-processing
+│   ├── predictor.py            # PromptUNetPredictor (direct 128×128 + tiling paths)
+│   ├── tiling.py               # TiledInference for arbitrary-resolution slices
+│   ├── inference_volume.py     # VolumeInference, SSF, and IFL orchestration
+│   ├── ssf.py                  # Self-Supervised Feedback strategies
+│   └── tune_ssf.py             # SSF hyperparameter tuning on training data
+│
+├── evaluation/                 # Benchmarks against UniverSeg (2D) & nnInteractive (3D)
+│   ├── README.md               # Evaluation setup & instructions
+│   ├── benchmark_universeg/    # 2D comparison pipeline & results
+│   └── benchmark_nninteractive/# 3D comparison pipeline & results
+│
+├── deployment/                 # ONNX export & basic integration test
+│   ├── keras_to_onnx.py        # Export .keras → ONNX
+│   ├── benchmark.html          # ONNX vs. TF.js correctness check (testing only)
+│   ├── index.html              # Minimal browser demo (testing only — not a medical viewer)
+│   ├── script.js               # ONNX inference engine & canvas interaction
+│   └── style.css               # Demo UI styling
+│
+├── utils/                      # Shared utilities
+│   ├── preprocessing.py        # Normalization, resampling helpers
+│   ├── cropping.py             # Patch extraction utilities
+│   ├── metrics.py              # Dice, IoU, and other segmentation metrics
+│   ├── visualization.py        # Plotting and result visualization
+│   ├── model_loading.py        # Model loading with Keras 3 serialization workarounds
+│   └── resampling.py           # Volume resampling utilities
+│
+├── docs/                       # Architecture diagrams, preprint, and documentation
+├── requirements.txt            # Core dependencies (TF 2.21, Keras 3, NumPy, etc.)
+└── requirements_eval.txt       # Core dependencies + Evaluation dependencies (PyTorch, nnUNet, UniverSeg)
+```
 
 ---
 
 ## 📖 How to Use the Code
 
 ### 1. Training a Model
-To train a brand new model or continue training, navigate to the `training/` directory. Open the latest notebook (e.g., `p_unet_292.ipynb`). Ensure your data is correctly populated in `data/train_data/`. The notebooks are designed interactively to configure hyperparameters, instantiate the model via `models/prompt_unet.py`, load data using generators from `data/`, and run training loops.
 
-### 2. Evaluating Models
-Once you have trained your LISP-Net, you can assess its performance. Ensure you have installed the dependencies via `requirements_eval.txt`. Check the folders inside `evaluation/` for specific run instructions depending on the chosen benchmark.
+To train the final benchmark model (v332):
 
-### 3. Model Inference, Exporting & Deployment
-Once trained, the `.keras` model can be utilized in several ways:
-- **Python Inference:** Use the modules inside the `inference/` folder (such as `inference_volume.py`) to run predictions and apply the Self-Supervised Feedback (SSF) mechanism directly from Python. This is the primary method for predicting on 3D medical volumes.
-- **Exporting for the Web:** You can export your trained `.keras` model to a TensorFlow.js format using the `deployment/keras_to_tf_js.py` converter tool.
-- **Web Deployment (Demo Only):** The `deployment/` folder includes UI code (HTML, JS, CSS) to serve an interactive canvas using the exported model via a local HTTP server (`python -m http.server 8000`). *Note: This local deployment is strictly for testing the TensorFlow.js integration and basic drawing mechanics. It is not useful for real-world application or general usage, as it lacks a proper 3D medical image viewer and interactive context update mechanism.*
+```bash
+python training/train_332.py
+```
+
+The training script uses:
+- **Architecture:** `training/prompt_unet.py` — dual-encoder U-Net with SE attention on prompt skip connections, pure Conv2D, filter schedule `[48, 96, 192, 256, 384]` (~28M params).
+- **Data pipeline:** `data/DataLoader_npz.py` loads NPZ files into RAM and provides the dataset dict. `data/DataGenerator.py` takes a DataLoader as input and samples prompt-query pairs with z-score normalization and label-guided 128×128 patch cropping. Augmentations are applied separately via `training/augmentations.py`.
+- **LR schedule:** `WarmupFlatCosineDecay` (50 ep warmup → 1500 ep flat → cosine decay to epoch 4000).
+- **Loss:** Binary cross-entropy.
+- **Training data:** 208 volumes across 7 datasets (NAKO, TotalSegmentator, MSD, BraTS-GLI, BraTS-MEN-RT, TopCoW MR, TopCoW CT), stored as NPZ files in `data/train_data/`.
+
+Training loops are custom (not `model.fit()`), using `tf.GradientTape` with periodic MLflow logging.
+
+### 2. Running Inference
+
+Once trained, use the modules in `inference/`:
+
+```python
+from inference.predictor import PromptUNetPredictor
+predictor = PromptUNetPredictor("training/p_unet_332.keras")
+mask = predictor.predict(query_image, prompt)
+```
+
+Two prediction paths are available:
+- **Direct 128×128:** Fast batched forward pass for standard-resolution inputs.
+- **Tiling:** Adaptive tiling via `TiledInference` for arbitrary-resolution slices (matches the JS implementation in `deployment/script.js`).
+
+For 3D volumes, use `inference/inference_volume.py` which orchestrates slice-by-slice prediction with optional SSF (Self-Supervised Feedback) and IFL (Interactive Feedback Loop).
+
+SSF strategies in `inference/ssf.py` include `RelativeSSIMStrategy`, `MaskDiceStrategy`, and `ConfidenceDropStrategy`.
+
+### 3. Evaluating Models
+
+Ensure evaluation dependencies are installed (`pip install -r requirements_eval.txt`). See [evaluation/README.md](evaluation/README.md) for benchmark model setup instructions.
+
+**2D Benchmark (LISP-Net vs UniverSeg):**
+```bash
+python evaluation/benchmark_universeg/eval_pipeline_2d.py --data_path <path>
+```
+
+**3D Benchmark (LISP-Net vs nnInteractive):**
+```bash
+python evaluation/benchmark_nninteractive/benchmark_3d.py --data <path> --model <path>
+```
+
+Complexity benchmarks (parameter count, FLOPs, speed) are in Jupyter notebooks under `evaluation/benchmark_universeg/` and `evaluation/benchmark_nninteractive/`.
+
+### 4. Exporting for Deployment
+
+The `deployment/` folder provides scripts to export a trained `.keras` model to ONNX. The accompanying HTML/JS/CSS files are a minimal test harness to verify the export works correctly — they are **not** a medical image viewer.
+
+```bash
+python deployment/keras_to_onnx.py training/p_unet_332.keras
+```
+
+To verify the export locally:
+```bash
+cd deployment && python -m http.server 8000
+```
+
+> Use these exports to integrate LISP-Net into your own medical imaging application. For a complete, production-ready integration with a full 3D viewer and interactive context management, see [Nora Imaging](https://www.nora-imaging.com/).
 
 ---
 
-## 🔬 Technical Documentation & Publication
+## ⚠️ Known Issues
 
-For an in-depth discussion, please refer to our preprint on version 21 of the LISP-Net:
-
-**[Read Preprint](docs/p_unet_preprint_outdated.pdf)**
-
-> **Note on Project Evolution:** 
-> This codebase is under active development. While the preprint provides the foundational scientific framework, the current implementation has evolved further. The future publication will include architectural refinements and further research, for example into computational complexity and memory footprint.
+- **Keras 3 serialization bug:** `.keras` files saved by TF 2.21 contain `renorm`/`quantization_config` keys in layer configs that Keras 3 rejects on load. Fixed in `inference/predictor.py` via JSON config patching.
