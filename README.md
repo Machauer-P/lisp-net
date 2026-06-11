@@ -32,7 +32,7 @@ You don't need to train a model from scratch. The fastest way to get value:
 
 1. **Browse pre-computed results** — Open the [results notebooks](#3-evaluating-models) to inspect all paper figures and tables without running a single line of code.
 2. **Grab the model weights** — Download pre-trained `.keras` or `.onnx` from [Hugging Face](https://huggingface.co/Machauer-P/lisp-net) (auto-downloaded by the inference code, or grab them manually).
-3. **Drop into your pipeline** — Take the tiling, batching, and inference logic from `inference/predictor.py` and `inference/tiling.py`, inject the model, and integrate LISP-Net into your own clinical workflow.
+3. **Drop into your pipeline** — Take the tiling, batching, and inference logic from `inference/predictor.py` and `inference/tiling.py`, normalize inputs with `universal_normalization()` from `utils/preprocessing.py`, inject the model, and integrate LISP-Net into your own clinical workflow.
 
 > The codebase uses the working name `prompt_unet` for internal identifiers (class names, filenames) — this is the same LISP-Net model.
 
@@ -221,8 +221,6 @@ To verify the export locally:
 ```bash
 cd deployment && python -m http.server 8000
 ```
-
-> Use these exports to integrate LISP-Net into your own medical imaging application. [Nora Imaging](https://www.nora-imaging.com/) provides a reference integration with a full 3D viewer and interactive context management.
 
 ---
 
