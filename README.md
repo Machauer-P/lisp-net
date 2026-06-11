@@ -11,7 +11,7 @@ LISP-Net is a lightweight, purely convolutional framework optimized for interact
 If you simply want to try the model **without any installation or setup**, our interactive demo runs directly in your browser — no Python, no GPU, no Docker required.
 
 ### Watch the Demo or Try it Yourself
-- **YouTube Demo:** [Watch our demo video](https://www.youtube.com/watch?v=DFkN3o8yA4w)
+- **YouTube Demo:** [Watch our demo video](https://youtu.be/SafGK6U0nDI)
 - **Interactive Demo:** Use it yourself at [Nora Imaging](https://www.nora-imaging.com/)
   - Read the [Nora Imaging Documentation](https://reisertm.github.io/noradoc/chapters/segmentation-assistant-lisp-net.html) first
 
