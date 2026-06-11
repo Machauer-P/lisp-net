@@ -12,7 +12,7 @@ LISP-Net is a lightweight, purely convolutional framework for interactive volume
 3. **Prompt-Driven, Not Prior-Driven:** The model follows the user's annotation intent rather than imposing memorized anatomical priors. This makes it robust to out-of-distribution data: e.g. an MRI-only variant retains accuracy on CT, and a head-only variant segments body anatomy.
 
 ### Watch the Demo or Try it Yourself
-- **YouTube Demo:** [Watch our demo video](https://www.youtube.com/watch?v=DFkN3o8yA4w)
+- **YouTube Demo:** [Watch our demo video](https://youtu.be/SafGK6U0nDI)
 - **Interactive Demo:** Use it yourself at [Nora Imaging](https://www.nora-imaging.com/)
   - Read the [Nora Imaging Documentation](https://reisertm.github.io/noradoc/chapters/segmentation-assistant-lisp-net.html) first
 
