@@ -566,8 +566,6 @@ class VolumeInference:
                     cur_prompt_mask = gt_plane_k.copy()
                     cur_prompt_img  = img_plane_k.copy()
                     prompt_img_128  = shaping(np.expand_dims(cur_prompt_img, -1))
-                else:
-                    cur_prompt_mask = pred_native.copy()
 
                 # Track per-slice confidence (mean sigmoid over predicted foreground)
                 fg = pred_native > 0.5
