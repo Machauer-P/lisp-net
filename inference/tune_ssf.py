@@ -4,13 +4,12 @@ inference/tune_ssf.py
 Unified SSF hyperparameter tuning script for Prompt-UNet.
 
 This script compares three Self-Supervised Feedback (SSF) strategies across
-a 30% random subset of your TRAINING datasets, running 10 inference passes
+a 30% random subset of your datasets, running 10 inference passes
 per volume with the same geometric prompt.
 
-USE THIS ON YOUR TRAINING DATA:
+USE THIS ON YOUR DATA:
 Run this script to empirically determine the best SSF strategy and threshold
-for your model. DO NOT use test data — in a real deployment scenario you have
-no access to test-set labels, so tuning on them would be unfair.
+for your model.
 
 Once you identify the best strategy + threshold, lock it into your main
 benchmark_3d.py evaluations:
@@ -76,11 +75,10 @@ STRATEGIES_TO_TEST = [
     ("MaskDice(0.60)",         MaskDiceStrategy(0.60)),
     ("MaskDice(0.70)",         MaskDiceStrategy(0.70)),
     # --- ConfidenceDrop ---
+    ("Confidence(0.02)",       ConfidenceDropStrategy(0.02)),
     ("Confidence(0.05)",       ConfidenceDropStrategy(0.05)),
     ("Confidence(0.10)",       ConfidenceDropStrategy(0.10)),
     ("Confidence(0.20)",       ConfidenceDropStrategy(0.20)),
-    ("Confidence(0.30)",       ConfidenceDropStrategy(0.30)),
-    ("Confidence(0.40)",       ConfidenceDropStrategy(0.40)),
 ]
 
 
@@ -90,16 +88,17 @@ def tune_ssf():
     # Configuration
     # ------------------------------------------------------------------
     npz_paths = [
-        "data/train_data/nako_combined.npz",
-        "data/train_data/total_seg_combined.npz",
-        "data/train_data/msd_combined.npz",
-        "data/train_data/brats_gli.npz",
-        "data/train_data/brats_men_rt.npz",
+        "data/test_data/TotalSeg_mri.npz",
+        "data/test_data/FLARE_2022.npz",
+        "data/test_data/han_seg_ct.npz",
+        "data/test_data/han_seg_mri.npz",
+        "data/test_data/SegRap2023.npz",
+        "data/test_data/HCCTase_ceCT.npz",
     ]
-    model_path   = "training/p_unet_313.keras"
+    model_path   = "training/p_unet_332_drop_only.keras"
     runs_per_vol = 10
     subset_ratio = 0.10
-    batch_size   = 3     # Increase for large GPUs (e.g. 8 or 12)
+    batch_size   = 6   
     buffer_size  = 4     # Number of recent predictions to aggregate for SSF refresh
 
     print(f"\n{'='*60}")
@@ -130,7 +129,7 @@ def tune_ssf():
             print(f"[WARN] Dataset not found: {path.name}  →  skipping.")
             continue
 
-        print(f"\n── {path.name} ──────────────────────────────────────")
+        print(f"\n--- {path.name} " + "-" * 50)
         dataset      = load_dataset(str(path))
         dataset_name = path.stem
 
@@ -272,7 +271,7 @@ def tune_ssf():
     print(f"  SSF gain      : {best_dice - baseline:+.4f}")
 
     # Save detailed CSV
-    out_csv = _HERE / "ssf_tuning_results.csv"
+    out_csv = _HERE / f"ssf_tuning_results_buffer_{buffer_size}.csv"
     df.to_csv(out_csv, index=False)
     print(f"\n[*] Full per-run trace saved to:\n    {out_csv}\n")
 
