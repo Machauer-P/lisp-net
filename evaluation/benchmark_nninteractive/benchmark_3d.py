@@ -360,7 +360,7 @@ def run_benchmark(
     modes: Union[str, List[str]] = "ifl",
     modality: Optional[str] = None,
     output_threshold: float = 0.5,
-    ssf_strategy: Optional[BaseSSFStrategy] = None,
+    ssf_strategy: Optional[BaseSSFStrategy] = ConfidenceDropStrategy(drop_fraction=0.05),
     buffer_size: int = 4,
     gt_dice_threshold: float = 0.65,
     window: int = 10,
@@ -825,7 +825,7 @@ if __name__ == "__main__":
     ap.add_argument("--modality",           default=None, choices=["CT", "MRI"])
     ap.add_argument("--output_threshold",   type=float, default=0.5)
     ap.add_argument(
-        "--ssf_strategy", default="relative_ssim",
+        "--ssf_strategy", default="confidence",
         choices=["none", "relative_ssim", "mask_dice", "confidence"],
     )
     ap.add_argument("--ssf_threshold",      type=float, default=0.40)
