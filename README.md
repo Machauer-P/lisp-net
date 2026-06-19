@@ -221,9 +221,3 @@ To verify the export locally:
 ```bash
 cd deployment && python -m http.server 8000
 ```
-
----
-
-## ⚠️ Known Issues
-
-- **Keras 3 serialization bug:** `.keras` files saved by TF 2.21 contain `renorm`/`quantization_config` keys in layer configs that Keras 3 rejects on load. Fixed in `inference/predictor.py` via JSON config patching.
