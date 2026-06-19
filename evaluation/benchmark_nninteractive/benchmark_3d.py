@@ -74,6 +74,7 @@ import io
 import json
 import pickle
 import sys
+import random
 import time
 from datetime import datetime
 from pathlib import Path
@@ -369,6 +370,7 @@ def run_benchmark(
     nn_device: Optional[str] = None,
     verbose: bool = True,
     batch_size: int = 3,
+    seed: int = 42,
 ) -> List[dict]:
     """
     Run the 3-D benchmark with multiple P U-Net modes on the **same** prompt
@@ -401,6 +403,10 @@ def run_benchmark(
     list[dict] — one record per (volume, run), containing per-mode P-UNet
     results and nn_results (baseline + one per IFL mode).
     """
+    # --- Seed numpy globally (random is seeded per-run below) -----------------
+    np.random.seed(seed)
+    _run_rng_counter = 0  # increments per prompt, ensures independent per-run seeds
+
     # --- Normalise modes list ------------------------------------------------
     if isinstance(modes, str):
         modes = [m.strip() for m in modes.replace(",", " ").split() if m.strip()]
@@ -460,8 +466,7 @@ def run_benchmark(
         pids = list(dataset.keys())
 
         if max_volumes is not None:
-            import random
-            rng   = random.Random(42)
+            rng = random.Random(seed)
             rng.shuffle(pids)
             avail = max_volumes - volume_counter
             if avail <= 0:
@@ -514,7 +519,11 @@ def run_benchmark(
                 try:
                     # ----------------------------------------------------------
                     # ONE random prompt — shared by ALL P-UNet modes AND nn runs
+                    # Per-run seed ensures identical prompt regardless of what
+                    # other modes / pipeline changes were made between re-runs.
                     # ----------------------------------------------------------
+                    random.seed(seed * 10_000 + _run_rng_counter)
+                    _run_rng_counter += 1
                     (
                         initial_prompt_3d,
                         initial_prompt_2d_seg,
@@ -823,6 +832,7 @@ if __name__ == "__main__":
     ap.add_argument("--buffer_size",        type=int,   default=4)
     ap.add_argument("--gt_dice_threshold",  type=float, default=0.65)
     ap.add_argument("--batch_size",         type=int,   default=3)
+    ap.add_argument("--seed",               type=int,   default=42)
     ap.add_argument("--window",             type=int,   default=10)
     ap.add_argument("--output_dir",         default="evaluation/benchmark_nninteractive/results")
     ap.add_argument("--nn_device",          default="cuda:0")
@@ -851,4 +861,5 @@ if __name__ == "__main__":
         min_prompt_pixels = args.min_prompt_pixels,
         output_dir        = args.output_dir,
         nn_device         = args.nn_device,
+        seed              = args.seed,
     )
