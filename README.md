@@ -14,7 +14,7 @@ LISP-Net is a lightweight, purely convolutional framework for interactive volume
 ### Watch the Demo or Try it Yourself
 - **YouTube Demo:** [Watch our demo video](https://youtu.be/SafGK6U0nDI)
 - **Interactive Demo:** Use it yourself at [Nora Imaging](https://www.nora-imaging.com/)
-  - Read the [Nora Imaging Documentation](https://reisertm.github.io/noradoc/chapters/segmentation-assistant-lisp-net.html) first
+  - Read the [Nora Imaging Documentation](https://reisertm.github.io/noradoc/chapters/annotation-and-reading-tools/segmentation-assistant-lisp-net.html) first
 
 > **⚠️ Research Prototype:** The Nora Imaging demo is a research prototype tested on a limited set of platforms and browsers. For validated clinical deployment, practitioners should use the [open model weights](https://huggingface.co/Machauer-P/lisp-net) and source code to integrate LISP-Net into their own validated infrastructure.
 
