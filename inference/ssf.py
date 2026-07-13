@@ -246,23 +246,22 @@ class ConfidenceDropStrategy(BaseSSFStrategy):
     sensitive to gradual confidence erosion that may not yet be visible in the
     binary mask.
 
+    If the predicted foreground is empty (|F| = 0), the check is skipped
+    and SSF does **not** fire.  Firing on an empty prediction would be
+    destructive: the buffer-minimum refresh computes ``min(buffered_masks)``,
+    and ``min(mask, zeros) = zeros`` would collapse the prompt to an empty mask.
+
     Parameters
     ----------
     drop_fraction : float
-        Relative confidence drop that triggers SSF.  Default 0.30.
-    min_foreground_fraction : float
-        Minimum fraction of 128×128 pixels that must be predicted as foreground
-        before the confidence check runs.  Prevents false-positives on
-        near-empty predictions.  Default 0.005 (0.5 %).
+        Relative confidence drop that triggers SSF.  Default 0.10.
     """
 
     def __init__(
         self,
-        drop_fraction: float = 0.05,
-        min_foreground_fraction: float = 0.005,
+        drop_fraction: float = 0.10,
     ):
         self.drop_fraction          = drop_fraction
-        self.min_foreground_fraction = min_foreground_fraction
         self._start_confidence: Optional[float] = None
 
     def reset(self) -> None:
@@ -277,18 +276,18 @@ class ConfidenceDropStrategy(BaseSSFStrategy):
         prompt_img_128: np.ndarray,
     ) -> bool:
         fg_mask     = pred_binary_128 > 0.5
-        fg_fraction = fg_mask.mean()
 
-        if fg_fraction < self.min_foreground_fraction:
+        if not fg_mask.any():
+            # |F| = 0: skip.  Firing would be destructive — buffer-minimum
+            # would collapse the prompt to zeros (min(mask, zeros) = zeros).
             if self.debug:
                 print(
                     f"[SSF-Confidence sl={slice_idx:4d}] "
-                    f"fg={fg_fraction:.4f} → skip (near-empty)"
+                    f"fg=0 → skip (empty prediction, keep old prompt)"
                 )
             return False
 
-        confidence_k = (float(pred_prob_128[fg_mask].mean())
-                        if fg_mask.any() else float(pred_prob_128.mean()))
+        confidence_k = float(pred_prob_128[fg_mask].mean())
 
         if self._start_confidence is None:
             self._start_confidence = confidence_k
@@ -324,8 +323,8 @@ class SSFController:
     strategy : BaseSSFStrategy or None
         Which SSF strategy to use.  ``None`` disables SSF entirely.
     buffer_size : int
-        Rolling buffer depth for the buffer-minimum prompt refresh.  Default 4.
-        
+        Rolling buffer depth for the buffer-minimum prompt refresh.  Default 2.
+
         NOTE: This default parameter was found via an evaluation on the training data.
         For other datasets, other settings might work better, and there is always
         the option to just turn SSF off.
@@ -334,7 +333,7 @@ class SSFController:
     def __init__(
         self,
         strategy: Optional[BaseSSFStrategy] = None,
-        buffer_size: int = 4,
+        buffer_size: int = 2,
     ):
         self.strategy = strategy
         self._buffer  = deque(maxlen=buffer_size)
@@ -400,9 +399,8 @@ class SSFController:
             new_mask_128 : (1, 128, 128, 1) buffer-min refresh mask TF tensor,
                            or None if not fired.
         """
-        self._buffer.append(pred_binary_128)
-
         if self.strategy is None:
+            self._buffer.append(pred_binary_128)
             return False, None
 
         # Convert tensors to numpy for strategy.check()
@@ -426,6 +424,11 @@ class SSFController:
             self._buffer.append(new_mask)
             self.strategy.reset()
             return True, new_mask
+
+        # Buffer non-empty predictions; skip empty ones to prevent
+        # zero-poisoning of future buffer-minimum refreshes.
+        if pred_b_np.sum() > 0:
+            self._buffer.append(pred_binary_128)
 
         return False, None
 

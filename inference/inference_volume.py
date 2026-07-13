@@ -248,7 +248,7 @@ class VolumeInference:
         normalization: str = "auto",
         output_threshold: float = 0.5,
         ssf_strategy: Optional[BaseSSFStrategy] = None,
-        buffer_size: int = 4,
+        buffer_size: int = 2,
         batch_size: int = 6,
     ):
         self.model_path         = Path(model_path)

@@ -137,27 +137,125 @@ def _canonical_mode(mode_str: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Debug helpers
+# ---------------------------------------------------------------------------
+
+def _print_debug_corrections(
+    volume_id, pid, run_idx, prompt_axis,
+    seg_3d_binary, modes, per_mode_results, nn_results,
+):
+    """Print correction indices for all IFL modes (P-UNet and nnInteractive)."""
+    total_slices = int(
+        np.any(np.moveaxis(seg_3d_binary, prompt_axis, 0), axis=(1, 2)).sum()
+    )
+    print(f"\n  [DEBUG] {volume_id}/{pid} run={run_idx} axis={prompt_axis} "
+          f"({total_slices} GT slices)")
+
+    for mode in modes:
+        ui = per_mode_results.get(mode, {}).get("user_interacts_idx", [])
+        if ui:
+            print(f"    P-UNet [{mode:<8s}]  n={len(ui):<3d}  {ui}")
+
+    for nn_key in sorted(nn_results.keys()):
+        ui = nn_results[nn_key].get("user_interacts_idx", [])
+        if ui:
+            print(f"    nnInteractive [{nn_key:<8s}]  n={len(ui):<3d}  {ui}")
+
+
+# ---------------------------------------------------------------------------
 # nnInteractive interaction schedule
 # ---------------------------------------------------------------------------
 
-def _nn_schedule(modes: List[str], per_mode_results: Dict[str, dict]) -> List[tuple]:
+def _nn_add_ifl_runs(
+    nn_results: Dict[str, dict],
+    nn_infer,
+    img_4d: "np.ndarray",
+    seg_3d_binary: "np.ndarray",
+    initial_prompt_3d: "np.ndarray",
+    prompt_axis: int,
+    prompt_idx: int,
+    window: int,
+    modes: List[str],
+    per_mode_results: Dict[str, dict],
+    verbose: bool,
+) -> None:
+    """After nnInteractive baseline has run, append IFL runs using
+    nnInteractive's own worst-performing slices, but with the **same number N**
+    of corrections that LISP-Net used.  Takes all slices below τ = 0.65,
+    ranks by Dice ascending, and keeps the N worst.  Mutates *nn_results*
+    in-place.
     """
-    Build the ordered list of ``(nn_key, user_interacts_idx)`` for all
-    nnInteractive invocations in a single (volume, run).
+    import contextlib, io, time
 
-    Returns
-    -------
-    list of (nn_key: str, user_interacts_idx: list[int])
-        "baseline"  → []  always first
-        "<mode>"    → user_interacts_idx from that IFL mode's P-UNet result
-    """
-    schedule = [("baseline", [])]
+    nn_pred_3d = nn_results["baseline"].get("result_volume")
+    if nn_pred_3d is None:
+        return
+
     for mode in modes:
         use_ifl, _ = _parse_mode(mode)
-        if use_ifl:
-            ui_idx = per_mode_results[mode].get("user_interacts_idx", [])
-            schedule.append((mode, list(ui_idx)))
-    return schedule
+        if not use_ifl:
+            continue
+        # Number of corrections = same budget LISP-Net used for this volume
+        n_corrections = len(
+            per_mode_results.get(mode, {}).get("user_interacts_idx", [])
+        )
+        # Compute per-slice Dice for all valid slices, sort by Dice ascending,
+        # take the N worst (shared budget = same as LISP-Net for this volume).
+        import numpy as np
+        gt_slices = np.moveaxis(seg_3d_binary, prompt_axis, 0)
+        pd_slices = np.moveaxis(nn_pred_3d, prompt_axis, 0)
+
+        has_fg = gt_slices.sum(axis=(1, 2)) > 0
+        valid_idx = np.where(has_fg)[0]
+        min_fg = 0.005 * gt_slices.shape[1] * gt_slices.shape[2]
+
+        dice_all = []
+        for s in valid_idx:
+            gt = gt_slices[s]
+            if gt.sum() < min_fg:
+                continue
+            pd = pd_slices[s] > 0.5
+            inter = (gt.astype(bool) & pd).sum()
+            denom = gt.sum() + pd.sum()
+            d = (2.0 * inter / denom) if denom > 0 else 1.0
+            dice_all.append((int(s), d))
+
+        dice_all.sort(key=lambda x: x[1])  # ascending — worst first
+        n_corrections = min(n_corrections, len(dice_all))
+        worst = [s for s, _ in dice_all[:n_corrections]]
+
+        _nn_buf = io.StringIO()
+        _t0 = time.perf_counter()
+        with contextlib.redirect_stdout(_nn_buf), \
+             contextlib.redirect_stderr(_nn_buf):
+            nn_out = nn_infer.run(
+                img_4d=img_4d,
+                seg_3d=seg_3d_binary,
+                initial_prompt_3d=initial_prompt_3d,
+                user_interacts_idx=worst,
+                prompt_axis=prompt_axis,
+                prompt_idx=prompt_idx,
+                window=window,
+            )
+        nn_t = time.perf_counter() - _t0
+        nn_results[mode] = {
+            "vol_dice":            nn_out["vol_dice"],
+            "vol_dice_full":       nn_out.get("vol_dice_full", nn_out["vol_dice"]),
+            "window_dice":         nn_out["window_dice"],
+            "time_s":              nn_t,
+            "n_interactions":      len(worst),
+            "user_interacts_idx":  list(worst),
+            "result_volume":       nn_out.get("result_volume"),
+        }
+
+        if verbose:
+            print(
+                f"      [nn+{mode:<13}]  "
+                f"vol={nn_out['vol_dice']:.3f}  "
+                f"(full={nn_out.get('vol_dice_full', nn_out['vol_dice']):.3f})  "
+                f"win={nn_out['window_dice']:.3f}  "
+                f"({nn_t:.1f}s)  n_inter={len(worst)} (nnInteractive worst slices)"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +458,8 @@ def run_benchmark(
     modes: Union[str, List[str]] = "ifl",
     modality: Optional[str] = None,
     output_threshold: float = 0.5,
-    ssf_strategy: Optional[BaseSSFStrategy] = ConfidenceDropStrategy(drop_fraction=0.05),
-    buffer_size: int = 4,
+    ssf_strategy: Optional[BaseSSFStrategy] = ConfidenceDropStrategy(drop_fraction=0.10),
+    buffer_size: int = 2,
     gt_dice_threshold: float = 0.65,
     window: int = 10,
     max_volumes: Optional[int] = None,
@@ -369,6 +467,7 @@ def run_benchmark(
     output_dir: Optional[str] = None,
     nn_device: Optional[str] = None,
     verbose: bool = True,
+    debug: bool = False,
     batch_size: int = 3,
     seed: int = 42,
 ) -> List[dict]:
@@ -611,53 +710,65 @@ def run_benchmark(
                             )
 
                     # ----------------------------------------------------------
-                    # nnInteractive: baseline + one run per IFL-enabled P-UNet mode
-                    #
-                    #   nn_baseline   — initial prompt only (user_interacts_idx=[])
-                    #   nn_<ifl_mode> — same user_interacts_idx as that IFL mode
+                    # nnInteractive: baseline first, then IFL runs using
+                    # nnInteractive's own worst slices (not LISP-Net's triggers)
                     # ----------------------------------------------------------
                     nn_results: Dict[str, dict] = {}
-                    nn_schedule = _nn_schedule(modes, per_mode_results)
 
-                    for nn_key, ui_idx in nn_schedule:
-                        _nn_buf = io.StringIO()
-                        _t0     = time.perf_counter()
-                        with contextlib.redirect_stdout(_nn_buf), \
-                             contextlib.redirect_stderr(_nn_buf):
-                            nn_out = nn_infer.run(
-                                img_4d             = img_4d,
-                                seg_3d             = seg_3d_binary,
-                                initial_prompt_3d  = initial_prompt_3d,
-                                user_interacts_idx = ui_idx,
-                                prompt_axis        = prompt_axis,
-                                prompt_idx         = prompt_idx,
-                                window             = window,
-                            )
-                        nn_t    = time.perf_counter() - _t0
-                        # Excludes the initial prompt — only extra IFL corrections.
-                        n_inter = len(ui_idx)
+                    # --- Baseline (initial prompt only) ---
+                    _nn_buf = io.StringIO()
+                    _t0     = time.perf_counter()
+                    with contextlib.redirect_stdout(_nn_buf), \
+                         contextlib.redirect_stderr(_nn_buf):
+                        nn_out = nn_infer.run(
+                            img_4d             = img_4d,
+                            seg_3d             = seg_3d_binary,
+                            initial_prompt_3d  = initial_prompt_3d,
+                            user_interacts_idx = [],
+                            prompt_axis        = prompt_axis,
+                            prompt_idx         = prompt_idx,
+                            window             = window,
+                        )
+                    nn_t = time.perf_counter() - _t0
+                    nn_results["baseline"] = {
+                        "vol_dice":       nn_out["vol_dice"],
+                        "vol_dice_full":  nn_out.get("vol_dice_full", nn_out["vol_dice"]),
+                        "window_dice":    nn_out["window_dice"],
+                        "time_s":         nn_t,
+                        "n_interactions": 0,
+                        "result_volume":  nn_out.get("result_volume"),
+                    }
 
-                        nn_results[nn_key] = {
-                            "vol_dice"       : nn_out["vol_dice"],
-                            "vol_dice_full"  : nn_out.get("vol_dice_full", nn_out["vol_dice"]),
-                            "window_dice"    : nn_out["window_dice"],
-                            "time_s"         : nn_t,
-                            "n_interactions" : n_inter,  # incl. initial prompt
-                        }
+                    if verbose:
+                        print(
+                            f"      [nn_baseline     ]  "
+                            f"vol={nn_out['vol_dice']:.3f}  "
+                            f"(full={nn_out.get('vol_dice_full', nn_out['vol_dice']):.3f})  "
+                            f"win={nn_out['window_dice']:.3f}  "
+                            f"({nn_t:.1f}s)  n_inter=0"
+                        )
 
-                        if verbose:
-                            label = (
-                                "nn_baseline"
-                                if nn_key == "baseline"
-                                else f"nn+{nn_key}"
-                            )
-                            print(
-                                f"      [{label:<16}]  "
-                                f"vol={nn_out['vol_dice']:.3f}  "
-                                f"(full={nn_out.get('vol_dice_full', nn_out['vol_dice']):.3f})  "
-                                f"win={nn_out['window_dice']:.3f}  "
-                                f"({nn_t:.1f}s)  n_inter={n_inter} (excl. initial)"
-                            )
+                    # --- IFL runs with nnInteractive's own worst slices ---
+                    _nn_add_ifl_runs(
+                        nn_results        = nn_results,
+                        nn_infer          = nn_infer,
+                        img_4d            = img_4d,
+                        seg_3d_binary     = seg_3d_binary,
+                        initial_prompt_3d = initial_prompt_3d,
+                        prompt_axis       = prompt_axis,
+                        prompt_idx        = prompt_idx,
+                        window            = window,
+                        modes             = modes,
+                        per_mode_results  = per_mode_results,
+                        verbose           = verbose,
+                    )
+
+                    # --- Debug: print correction indices for all IFL modes ---
+                    if debug:
+                        _print_debug_corrections(
+                            volume_id, pid, run_idx, prompt_axis,
+                            seg_3d_binary, modes, per_mode_results, nn_results,
+                        )
 
                     record = _make_run_record(
                         volume_id         = volume_id,
@@ -828,10 +939,12 @@ if __name__ == "__main__":
         "--ssf_strategy", default="confidence",
         choices=["none", "relative_ssim", "mask_dice", "confidence"],
     )
-    ap.add_argument("--ssf_threshold",      type=float, default=0.40)
-    ap.add_argument("--buffer_size",        type=int,   default=4)
+    ap.add_argument("--ssf_threshold",      type=float, default=0.10)
+    ap.add_argument("--buffer_size",        type=int,   default=2)
     ap.add_argument("--gt_dice_threshold",  type=float, default=0.65)
     ap.add_argument("--batch_size",         type=int,   default=3)
+    ap.add_argument("--debug",              action="store_true",  default=False,
+                    help="Print per-volume correction indices and all Dice scores")
     ap.add_argument("--seed",               type=int,   default=42)
     ap.add_argument("--window",             type=int,   default=10)
     ap.add_argument("--output_dir",         default="evaluation/benchmark_nninteractive/results")
@@ -862,4 +975,5 @@ if __name__ == "__main__":
         output_dir        = args.output_dir,
         nn_device         = args.nn_device,
         seed              = args.seed,
+        debug             = args.debug,
     )
