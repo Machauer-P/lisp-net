@@ -207,13 +207,10 @@ def _nn_add_ifl_runs(
 
         has_fg = gt_slices.sum(axis=(1, 2)) > 0
         valid_idx = np.where(has_fg)[0]
-        min_fg = 0.005 * gt_slices.shape[1] * gt_slices.shape[2]
 
         dice_all = []
         for s in valid_idx:
             gt = gt_slices[s]
-            if gt.sum() < min_fg:
-                continue
             pd = pd_slices[s] > 0.5
             inter = (gt.astype(bool) & pd).sum()
             denom = gt.sum() + pd.sum()
