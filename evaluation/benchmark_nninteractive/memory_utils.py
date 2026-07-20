@@ -219,6 +219,10 @@ def scan_from_pkl(
     """
     import pickle
 
+    # Index NPZ files for shape metadata (needed because shape_original in
+    # the pkl may differ from the actual image dimensions).
+    index_npz(npz_paths)
+
     # dataset_name → full npz path
     ds_to_path: Dict[str, str] = {}
     for p in npz_paths:
@@ -227,29 +231,28 @@ def scan_from_pkl(
     with open(pkl_path, "rb") as f:
         records = pickle.load(f)
 
-    seen: set = set()
     candidates: List[Dict[str, Any]] = []
 
     for r in records:
-        key = (r["volume_id"], int(r["selected_roi"]), int(r["prompt_axis"]))
-        if key in seen:
-            continue
-        seen.add(key)
+        ds_name = r["dataset_name"]
+        pid = str(r["pid"])
+        axis = int(r["prompt_axis"])
 
-        shape = r["shape_original"]
-        axis = r["prompt_axis"]
-        h, w = [shape[a] for a in range(3) if a != axis]
+        # Use NPZ shape, not shape_original (which may differ)
+        npz_shape = _PID_SHAPE.get((ds_name, pid))
+        if npz_shape is None:
+            continue
+        h, w = [npz_shape[a] for a in range(3) if a != axis]
         roi_slices = int(r.get("roi_slices", 0))
         total_voxels = roi_slices * h * w
-        ds_name = r["dataset_name"]
 
         candidates.append(
             {
                 "npz_path": ds_to_path.get(ds_name, ""),
                 "dataset_name": ds_name,
-                "pid": str(r["pid"]),
+                "pid": pid,
                 "modality": str(r.get("modality", "ct")),
-                "axis": int(axis),
+                "axis": axis,
                 "roi": int(r["selected_roi"]),
                 "roi_slices": roi_slices,
                 "h": int(h),
@@ -259,9 +262,15 @@ def scan_from_pkl(
             }
         )
 
+    n_unique = len(
+        set(
+            (c["dataset_name"], c["pid"], c["roi"], c["axis"])
+            for c in candidates
+        )
+    )
     print(
-        f"Scanned {len(candidates)} unique (volume, ROI, axis) combinations "
-        f"from pkl ({len(records)} total runs)"
+        f"Scanned {len(candidates)} runs from pkl "
+        f"({n_unique} unique volume/ROI/axis configurations)"
     )
     return candidates
 
