@@ -169,6 +169,7 @@ def _print_debug_corrections(
 def _nn_add_ifl_runs(
     nn_results: Dict[str, dict],
     nn_infer,
+    nn_pred_3d: "np.ndarray",
     img_4d: "np.ndarray",
     seg_3d_binary: "np.ndarray",
     initial_prompt_3d: "np.ndarray",
@@ -187,7 +188,6 @@ def _nn_add_ifl_runs(
     """
     import contextlib, io, time
 
-    nn_pred_3d = nn_results["baseline"].get("result_volume")
     if nn_pred_3d is None:
         return
 
@@ -245,7 +245,6 @@ def _nn_add_ifl_runs(
             "time_s":              nn_t,
             "n_interactions":      len(worst),
             "user_interacts_idx":  list(worst),
-            "result_volume":       nn_out.get("result_volume"),
         }
 
         if verbose:
@@ -736,7 +735,6 @@ def run_benchmark(
                         "window_dice":    nn_out["window_dice"],
                         "time_s":         nn_t,
                         "n_interactions": 0,
-                        "result_volume":  nn_out.get("result_volume"),
                     }
 
                     if verbose:
@@ -752,6 +750,7 @@ def run_benchmark(
                     _nn_add_ifl_runs(
                         nn_results        = nn_results,
                         nn_infer          = nn_infer,
+                        nn_pred_3d        = nn_out.get("result_volume"),
                         img_4d            = img_4d,
                         seg_3d_binary     = seg_3d_binary,
                         initial_prompt_3d = initial_prompt_3d,
