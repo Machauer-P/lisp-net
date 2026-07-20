@@ -186,6 +186,87 @@ def _classify(total_voxels: int, small_limit: int, large_limit: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Scan candidates from benchmark pkl (matches actual eval population)
+# ---------------------------------------------------------------------------
+
+def scan_from_pkl(
+    pkl_path: str,
+    npz_paths: List[Path],
+    small_limit: int = 128**3,
+    large_limit: int = 192**3,
+) -> List[Dict[str, Any]]:
+    """Extract unique (volume, ROI, prompt_axis) combos from a benchmark pkl.
+
+    Unlike :func:`scan_candidates`, which scans NPZ files for the largest ROI
+    per patient per axis, this function reads the actual evaluated population
+    from a benchmark results pickle — every ROI that was actually run.
+
+    Parameters
+    ----------
+    pkl_path : str
+        Path to a ``results_*.pkl`` produced by ``benchmark_3d.py``.
+    npz_paths : list[Path]
+        NPZ test-data paths (used to resolve ``dataset_name`` → file path).
+    small_limit, large_limit : int
+        Classification thresholds for ``total_voxels``.
+
+    Returns
+    -------
+    list[dict]
+        Same format as :func:`scan_candidates`: ``npz_path``, ``dataset_name``,
+        ``pid``, ``modality``, ``axis``, ``roi``, ``roi_slices``, ``h``, ``w``,
+        ``total_voxels``, ``size_bin``.
+    """
+    import pickle
+
+    # dataset_name → full npz path
+    ds_to_path: Dict[str, str] = {}
+    for p in npz_paths:
+        ds_to_path[Path(p).stem] = str(p)
+
+    with open(pkl_path, "rb") as f:
+        records = pickle.load(f)
+
+    seen: set = set()
+    candidates: List[Dict[str, Any]] = []
+
+    for r in records:
+        key = (r["volume_id"], int(r["selected_roi"]), int(r["prompt_axis"]))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        shape = r["shape_original"]
+        axis = r["prompt_axis"]
+        h, w = [shape[a] for a in range(3) if a != axis]
+        roi_slices = int(r.get("roi_slices", 0))
+        total_voxels = roi_slices * h * w
+        ds_name = r["dataset_name"]
+
+        candidates.append(
+            {
+                "npz_path": ds_to_path.get(ds_name, ""),
+                "dataset_name": ds_name,
+                "pid": str(r["pid"]),
+                "modality": str(r.get("modality", "ct")),
+                "axis": int(axis),
+                "roi": int(r["selected_roi"]),
+                "roi_slices": roi_slices,
+                "h": int(h),
+                "w": int(w),
+                "total_voxels": total_voxels,
+                "size_bin": _classify(total_voxels, small_limit, large_limit),
+            }
+        )
+
+    print(
+        f"Scanned {len(candidates)} unique (volume, ROI, axis) combinations "
+        f"from pkl ({len(records)} total runs)"
+    )
+    return candidates
+
+
+# ---------------------------------------------------------------------------
 # 4. Pick the heaviest candidate for a size bin
 # ---------------------------------------------------------------------------
 
