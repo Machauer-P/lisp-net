@@ -178,6 +178,8 @@ def scan_candidates(
 
 
 def _classify(total_voxels: int, small_limit: int, large_limit: int) -> str:
+    """Classify by total_voxels (roi_slices × H × W), matching
+    inference_speed.ipynb and the nnInteractive paper size convention."""
     if total_voxels <= small_limit:
         return "Small"
     if total_voxels <= large_limit:
@@ -246,6 +248,11 @@ def scan_from_pkl(
         roi_slices = int(r.get("roi_slices", 0))
         total_voxels = roi_slices * h * w
 
+        # ROI spatial extent — what determines the prompt-mask bbox and thus
+        # tiling (the actual driver of GPU memory for Prompt U-Net).
+        roi_spatial = r.get("roi_spatial_size", [0, 0])
+        roi_h, roi_w = int(roi_spatial[0]), int(roi_spatial[1])
+
         candidates.append(
             {
                 "npz_path": ds_to_path.get(ds_name, ""),
@@ -257,6 +264,8 @@ def scan_from_pkl(
                 "roi_slices": roi_slices,
                 "h": int(h),
                 "w": int(w),
+                "roi_h": roi_h,
+                "roi_w": roi_w,
                 "total_voxels": total_voxels,
                 "size_bin": _classify(total_voxels, small_limit, large_limit),
             }
@@ -282,11 +291,16 @@ def scan_from_pkl(
 def pick_largest(
     candidates: List[Dict[str, Any]], size_label: str
 ) -> Optional[Dict[str, Any]]:
-    """Return the candidate with the largest ``total_voxels`` in *size_label*."""
+    """Return the candidate with the largest ROI spatial area (roi_h × roi_w)
+    in *size_label*.
+
+    ROI spatial area determines the prompt-mask bounding box, which drives
+    tiling — the actual source of GPU memory scaling for Prompt U-Net.
+    """
     subset = [c for c in candidates if c["size_bin"] == size_label]
     if not subset:
         return None
-    return max(subset, key=lambda c: c["total_voxels"])
+    return max(subset, key=lambda c: c["roi_h"] * c["roi_w"])
 
 
 # ---------------------------------------------------------------------------
