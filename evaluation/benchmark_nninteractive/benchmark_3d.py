@@ -15,13 +15,38 @@ nnInteractive runs
 ------------------
 nnInteractive is executed:
   • once as a **baseline** — initial prompt only (no extra interactions)
-  • once **paired** with every IFL-enabled P-UNet mode, using the
-    *identical* ``user_interacts_idx`` that the IFL loop produced
+  • once **paired** with every IFL-enabled P-UNet mode, using a **sequential**
+    interaction ladder matched to that mode's correction count N.
 
-Example: modes = ['ssf', 'ifl', 'ifl_ssf']
-  P-UNet ssf    → compared against nn_baseline   (0 extra slices)
-  P-UNet ifl    → compared against nn_ifl         (same n slices as IFL)
-  P-UNet ifl_ssf→ compared against nn_ifl_ssf     (same n slices as IFL+SSF)
+Sequential interaction ladder (the fix to the reviewer's objection)
+--------------------------------------------------------------------
+Previously nnInteractive's correction slices were either chosen by LISP-Net
+(conflict of interest) or selected in a single batch from the baseline
+prediction (N worst slices at once → spatially clustered, low information
+gain).  Now the budget N still comes from the paired P-UNet IFL mode, but
+**placement** is chosen by nnInteractive's own current performance, one slice
+at a time:
+
+    step 0 : baseline prediction  (initial prompt only)
+    step 1 : pick worst slice in step-0 prediction, inject its dense GT mask
+             into the initial-seg channel, re-run  →  prediction_1
+    step 2 : pick worst slice in prediction_1 (excluding already-added),
+             inject, re-run                          →  prediction_2
+    ...
+    step N : ...                                      →  prediction_N  (final)
+
+Each re-run adds exactly one new worst slice on top of the cumulative set.
+Dense GT masks go through ``add_initial_seg_interaction`` (channel -7), which
+is the only channel that accepts full slice masks and triggers a full-volume
+refinement pass — hence each step is a from-scratch re-run.
+
+Example: modes = ['ssf', 'none', 'ifl_ssf']
+  P-UNet ssf     → SSF only, initial prompt                  (0 corrections)
+  P-UNet none    → plain forward, initial prompt             (0 corrections)
+  P-UNet ifl_ssf → SSF + IFL, N sequential GT corrections
+  nnInteractive baseline    → initial prompt only            (0 interactions)
+  nnInteractive +ifl_ssf     → sequential ladder of N interactions,
+                              budget N matched to P-UNet ifl_ssf
 
 Supported mode strings (case-insensitive)
 ------------------------------------------
@@ -46,7 +71,7 @@ Record structure (one dict per (volume, run))
         "<mode>": {
             "vol_dice", "window_dice", "time_s",
             "normalization_mode", "num_slices_evaluated",
-            "num_user_interacts",   # None for ssf / none modes
+            "n_interactions",   # None for ssf / none modes
             "user_interacts_idx",   # []   for ssf / none modes
         },
         ...
@@ -55,11 +80,14 @@ Record structure (one dict per (volume, run))
     # nnInteractive results (nested dict)
     "nn_results": {
         "baseline": {               # always present — initial prompt only
-            "vol_dice", "window_dice", "time_s", "num_interactions": 0
+            "vol_dice", "window_dice", "time_s", "n_interactions": 0
         },
         "<ifl_mode>": {             # present for each IFL P-UNet mode
             "vol_dice", "window_dice", "time_s",
-            "num_interactions": N   # same N as the paired P-UNet IFL mode
+            "n_interactions": N,    # matched to the paired P-UNet IFL mode
+            "user_interacts_idx",   # cumulative list of added worst slices
+            "dice_progression",     # [baseline_vol, step1, ..., stepN]
+            "step_times"            # per-step wall-clock seconds
         },
         ...
     },
@@ -166,6 +194,30 @@ def _print_debug_corrections(
 # nnInteractive interaction schedule
 # ---------------------------------------------------------------------------
 
+def _per_slice_dice(
+    seg_3d_binary: np.ndarray,
+    pred_3d: np.ndarray,
+    prompt_axis: int,
+) -> List[tuple]:
+    """Per-slice Dice between *pred_3d* and GT, for slices where GT has
+    foreground along *prompt_axis*.  Returns ``[(slice_idx, dice), ...]``."""
+    gt_slices = np.moveaxis(seg_3d_binary, prompt_axis, 0)
+    pd_slices = np.moveaxis(pred_3d, prompt_axis, 0)
+
+    has_fg = gt_slices.sum(axis=(1, 2)) > 0
+    valid_idx = np.where(has_fg)[0]
+
+    out: List[tuple] = []
+    for s in valid_idx:
+        gt = gt_slices[s]
+        pd = pd_slices[s] > 0.5
+        inter = (gt.astype(bool) & pd).sum()
+        denom = gt.sum() + pd.sum()
+        d = (2.0 * inter / denom) if denom > 0 else 1.0
+        out.append((int(s), float(d)))
+    return out
+
+
 def _nn_add_ifl_runs(
     nn_results: Dict[str, dict],
     nn_infer,
@@ -180,78 +232,108 @@ def _nn_add_ifl_runs(
     per_mode_results: Dict[str, dict],
     verbose: bool,
 ) -> None:
-    """After nnInteractive baseline has run, append IFL runs using
-    nnInteractive's own worst-performing slices, but with the **same number N**
-    of corrections that LISP-Net used.  Takes all slices below τ = 0.65,
-    ranks by Dice ascending, and keeps the N worst.  Mutates *nn_results*
-    in-place.
-    """
-    import contextlib, io, time
+    """After the nnInteractive baseline has run, append a **sequential** IFL
+    run for each IFL-enabled P-UNet mode.
 
+    The interaction budget N is the number of corrections the paired P-UNet
+    mode used for this volume/run (``len(per_mode_results[mode]["user_interacts_idx"])``).
+    The ladder is built one slice at a time: starting from the baseline
+    prediction, the worst-performing slice (lowest Dice vs GT, excluding slices
+    already corrected) is injected as a dense GT mask into the initial-seg
+    channel and nnInteractive is re-run.  This is repeated N times — each
+    step adds exactly one new worst slice on top of the cumulative set.
+
+    Mutates *nn_results* in-place.
+    """
     if nn_pred_3d is None:
         return
+
+    baseline_dice = nn_results["baseline"]["vol_dice"]
 
     for mode in modes:
         use_ifl, _ = _parse_mode(mode)
         if not use_ifl:
             continue
-        # Number of corrections = same budget LISP-Net used for this volume
-        n_corrections = len(
+
+        # Budget = same number of corrections the paired P-UNet mode used
+        n_budget = len(
             per_mode_results.get(mode, {}).get("user_interacts_idx", [])
         )
-        # Compute per-slice Dice for all valid slices, sort by Dice ascending,
-        # take the N worst (shared budget = same as LISP-Net for this volume).
-        import numpy as np
-        gt_slices = np.moveaxis(seg_3d_binary, prompt_axis, 0)
-        pd_slices = np.moveaxis(nn_pred_3d, prompt_axis, 0)
 
-        has_fg = gt_slices.sum(axis=(1, 2)) > 0
-        valid_idx = np.where(has_fg)[0]
+        added: List[int] = []
+        step_times: List[float] = []
+        # vol_dice after baseline (step 0) + after each sequential step
+        dice_progression: List[float] = [float(baseline_dice)]
+        current_pred = nn_pred_3d
+        last_out: Optional[dict] = None
 
-        dice_all = []
-        for s in valid_idx:
-            gt = gt_slices[s]
-            pd = pd_slices[s] > 0.5
-            inter = (gt.astype(bool) & pd).sum()
-            denom = gt.sum() + pd.sum()
-            d = (2.0 * inter / denom) if denom > 0 else 1.0
-            dice_all.append((int(s), d))
+        for step in range(n_budget):
+            # Worst slice in the CURRENT prediction, excluding already-added.
+            scores = _per_slice_dice(seg_3d_binary, current_pred, prompt_axis)
+            scores = [(s, d) for s, d in scores if s not in added]
+            if not scores:
+                break  # no valid slice left to correct
+            scores.sort(key=lambda x: x[1])  # ascending — worst first
+            worst = scores[0][0]
+            added.append(worst)
 
-        dice_all.sort(key=lambda x: x[1])  # ascending — worst first
-        n_corrections = min(n_corrections, len(dice_all))
-        worst = [s for s, _ in dice_all[:n_corrections]]
+            _nn_buf = io.StringIO()
+            _t0 = time.perf_counter()
+            with contextlib.redirect_stdout(_nn_buf), \
+                 contextlib.redirect_stderr(_nn_buf):
+                nn_out = nn_infer.run(
+                    img_4d             = img_4d,
+                    seg_3d             = seg_3d_binary,
+                    initial_prompt_3d  = initial_prompt_3d,
+                    user_interacts_idx = list(added),   # cumulative dense masks
+                    prompt_axis        = prompt_axis,
+                    prompt_idx         = prompt_idx,
+                    window             = window,
+                )
+            step_t = time.perf_counter() - _t0
+            step_times.append(step_t)
+            current_pred = nn_out.get("result_volume", current_pred)
+            dice_progression.append(float(nn_out["vol_dice"]))
+            last_out = nn_out
 
-        _nn_buf = io.StringIO()
-        _t0 = time.perf_counter()
-        with contextlib.redirect_stdout(_nn_buf), \
-             contextlib.redirect_stderr(_nn_buf):
-            nn_out = nn_infer.run(
-                img_4d=img_4d,
-                seg_3d=seg_3d_binary,
-                initial_prompt_3d=initial_prompt_3d,
-                user_interacts_idx=worst,
-                prompt_axis=prompt_axis,
-                prompt_idx=prompt_idx,
-                window=window,
-            )
-        nn_t = time.perf_counter() - _t0
+            if verbose:
+                print(
+                    f"      [nn+{mode:<13}] step {step + 1}/{n_budget}  "
+                    f"add slice={worst}  "
+                    f"vol={nn_out['vol_dice']:.3f}  "
+                    f"(full={nn_out.get('vol_dice_full', nn_out['vol_dice']):.3f})  "
+                    f"win={nn_out['window_dice']:.3f}  "
+                    f"({step_t:.1f}s)  cum_inter={len(added)}"
+                )
+
+        if last_out is None:
+            # N == 0 (P-Net used no corrections) or no correctable slice was
+            # available before the first step.  Mirror the baseline so the
+            # paired nn_results[mode] entry always exists for aggregation.
+            nn_results[mode] = {
+                "vol_dice":           nn_results["baseline"]["vol_dice"],
+                "vol_dice_full":      nn_results["baseline"].get(
+                    "vol_dice_full", nn_results["baseline"]["vol_dice"]
+                ),
+                "window_dice":        nn_results["baseline"]["window_dice"],
+                "time_s":             0.0,
+                "n_interactions":     0,
+                "user_interacts_idx": [],
+                "dice_progression":   [float(baseline_dice)],
+                "step_times":         [],
+            }
+            continue
+
         nn_results[mode] = {
-            "vol_dice":            nn_out["vol_dice"],
-            "vol_dice_full":       nn_out.get("vol_dice_full", nn_out["vol_dice"]),
-            "window_dice":         nn_out["window_dice"],
-            "time_s":              nn_t,
-            "n_interactions":      len(worst),
-            "user_interacts_idx":  list(worst),
+            "vol_dice":           last_out["vol_dice"],
+            "vol_dice_full":      last_out.get("vol_dice_full", last_out["vol_dice"]),
+            "window_dice":        last_out["window_dice"],
+            "time_s":             float(sum(step_times)),
+            "n_interactions":     len(added),
+            "user_interacts_idx": list(added),
+            "dice_progression":   dice_progression,
+            "step_times":         step_times,
         }
-
-        if verbose:
-            print(
-                f"      [nn+{mode:<13}]  "
-                f"vol={nn_out['vol_dice']:.3f}  "
-                f"(full={nn_out.get('vol_dice_full', nn_out['vol_dice']):.3f})  "
-                f"win={nn_out['window_dice']:.3f}  "
-                f"({nn_t:.1f}s)  n_inter={len(worst)} (nnInteractive worst slices)"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +388,8 @@ def _make_run_record(
     nn_results keys
     ---------------
     "baseline"   — nnInteractive with initial prompt only (no IFL).
-    "<mode>"     — nnInteractive paired with that IFL P-UNet mode.
+    "<mode>"     — nnInteractive paired with that IFL P-UNet mode (sequential
+                   ladder of N = matched budget).
     """
     return {
         "volume_id"       : volume_id,
@@ -479,7 +562,7 @@ def run_benchmark(
     runs_per_vol    : int — random prompts per volume.
     modes           : str or list[str]
                       All modes run on the **same** initial prompt per run.
-                      Accepted: 'ssf', 'ifl', 'ifl_ssf', 'none'.
+                      Accepted: 'ssf', 'none', 'ifl', 'ifl_ssf'.
     modality        : 'CT' or 'MRI' — fallback (required if .npz has no modality).
     output_threshold: float — sigmoid→binary threshold.
     ssf_strategy    : BaseSSFStrategy or None — used by SSF-enabled modes.
@@ -496,7 +579,7 @@ def run_benchmark(
     Returns
     -------
     list[dict] — one record per (volume, run), containing per-mode P-UNet
-    results and nn_results (baseline + one per IFL mode).
+    results and nn_results (baseline + one sequential ladder per IFL mode).
     """
     # --- Seed numpy globally (random is seeded per-run below) -----------------
     np.random.seed(seed)
@@ -520,7 +603,7 @@ def run_benchmark(
         print(f"\n{'='*64}")
         print(f"Loading Prompt U-Net : {p_unet_model}")
         print(f"P U-Net modes        : {modes}")
-        print(f"nnInteractive runs  : baseline + {ifl_modes}  (paired with IFL modes)")
+        print(f"nnInteractive runs  : baseline + {ifl_modes}  (sequential ladders, budget from IFL modes)")
 
     # --- Load ONE InteractiveFeedbackLoop instance ----------------------------
     p_unet = InteractiveFeedbackLoop(
@@ -594,7 +677,7 @@ def run_benchmark(
             if np.all(seg_3d_labels == 0):
                 if verbose:
                     print(f"  [{pid}] Empty segmentation — skipping.")
-                continue
+                    continue
 
             volume_id = f"{dataset_name}__{pid}"
             volume_counter += 1
@@ -639,7 +722,7 @@ def run_benchmark(
                     else:
                         _roi_spatial_size = [0, 0]
                         _roi_slices = 0
-                        
+
                     _roi_voxels = int(seg_3d_binary.sum())
 
                     # ----------------------------------------------------------
@@ -706,8 +789,8 @@ def run_benchmark(
                             )
 
                     # ----------------------------------------------------------
-                    # nnInteractive: baseline first, then IFL runs using
-                    # nnInteractive's own worst slices (not LISP-Net's triggers)
+                    # nnInteractive: baseline first, then ONE sequential IFL
+                    # ladder per IFL mode (budget N matched to that P-UNet mode).
                     # ----------------------------------------------------------
                     nn_results: Dict[str, dict] = {}
 
@@ -743,20 +826,20 @@ def run_benchmark(
                             f"({nn_t:.1f}s)  n_inter=0"
                         )
 
-                    # --- IFL runs with nnInteractive's own worst slices ---
+                    # --- Sequential IFL ladder (worst slice, one at a time) ---
                     _nn_add_ifl_runs(
-                        nn_results        = nn_results,
-                        nn_infer          = nn_infer,
-                        nn_pred_3d        = nn_out.get("result_volume"),
-                        img_4d            = img_4d,
-                        seg_3d_binary     = seg_3d_binary,
-                        initial_prompt_3d = initial_prompt_3d,
-                        prompt_axis       = prompt_axis,
-                        prompt_idx        = prompt_idx,
-                        window            = window,
-                        modes             = modes,
-                        per_mode_results  = per_mode_results,
-                        verbose           = verbose,
+                        nn_results         = nn_results,
+                        nn_infer           = nn_infer,
+                        nn_pred_3d         = nn_out.get("result_volume"),
+                        img_4d             = img_4d,
+                        seg_3d_binary      = seg_3d_binary,
+                        initial_prompt_3d  = initial_prompt_3d,
+                        prompt_axis        = prompt_axis,
+                        prompt_idx         = prompt_idx,
+                        window             = window,
+                        modes              = modes,
+                        per_mode_results   = per_mode_results,
+                        verbose            = verbose,
                     )
 
                     # --- Debug: print correction indices for all IFL modes ---
@@ -919,15 +1002,15 @@ def _print_summary(summary: dict):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
-        description="3-D benchmark: multi-mode Prompt U-Net vs nnInteractive (paired IFL)."
+        description="3-D benchmark: multi-mode Prompt U-Net vs nnInteractive (sequential IFL)."
     )
     ap.add_argument("--npz_paths",      nargs="+", required=True)
     ap.add_argument("--p_unet_model",   required=True)
     ap.add_argument("--nn_model_dir",   default=None)
     ap.add_argument("--runs_per_vol",   type=int,   default=5)
     ap.add_argument(
-        "--modes", nargs="+", default=["ifl"],
-        help="Mode strings: 'ssf', 'ifl', 'ifl_ssf', 'none'.  Example: --modes ssf ifl ifl_ssf",
+        "--modes", nargs="+", default=["ifl_ssf"],
+        help="Mode strings: 'ssf', 'none', 'ifl', 'ifl_ssf'.  Example: --modes ssf none ifl_ssf",
     )
     ap.add_argument("--modality",           default=None, choices=["CT", "MRI"])
     ap.add_argument("--output_threshold",   type=float, default=0.5)
@@ -939,6 +1022,8 @@ if __name__ == "__main__":
     ap.add_argument("--buffer_size",        type=int,   default=2)
     ap.add_argument("--gt_dice_threshold",  type=float, default=0.65)
     ap.add_argument("--batch_size",         type=int,   default=3)
+    ap.add_argument("--max_volumes",        type=int,   default=None,
+                    help="Cap on total evaluated volumes (random subset).")
     ap.add_argument("--debug",              action="store_true",  default=False,
                     help="Print per-volume correction indices and all Dice scores")
     ap.add_argument("--seed",               type=int,   default=42)
@@ -967,7 +1052,7 @@ if __name__ == "__main__":
         batch_size        = args.batch_size,
         gt_dice_threshold = args.gt_dice_threshold,
         window            = args.window,
-        min_prompt_pixels = args.min_prompt_pixels,
+        max_volumes       = args.max_volumes,
         output_dir        = args.output_dir,
         nn_device         = args.nn_device,
         seed              = args.seed,
