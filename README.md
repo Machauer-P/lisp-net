@@ -4,12 +4,12 @@
 [![Paper](https://img.shields.io/badge/Paper-Preprint-blue?style=for-the-badge)](docs/LISP_NET_PREPRINT.pdf)
 [![Hugging Face](https://img.shields.io/badge/🤗%20Model-Hugging%20Face-orange?style=for-the-badge)](https://huggingface.co/Machauer-P/lisp-net)
 
-LISP-Net is a lightweight, purely convolutional framework for interactive volumetric medical image segmentation. A single dense 2D prompt — a reference image paired with a full segmentation mask — defines both the target structure and the desired boundary style, propagating the user's annotation intent through within-volume visual correspondence. Pre-trained weights are available on [Hugging Face](https://huggingface.co/Machauer-P/lisp-net) as `.keras` and `.onnx`.
+LISP-Net is a lightweight, purely convolutional framework for interactive volumetric medical image segmentation. A single dense 2D prompt — a reference image paired with a full segmentation mask — defines the target structure and annotation convention, propagating the user's annotation through within-volume visual correspondence. Pre-trained weights are available on [Hugging Face](https://huggingface.co/Machauer-P/lisp-net) as `.keras` and `.onnx`.
 
 **Key Advantages:**
-1. **Full Client-Side Inference:** Medical data never leaves the local machine — no server round-trips, no cloud dependency.
-2. **Fast & Low Hardware Requirements:** Peak GPU memory of 164–780 MB, per-slice latency of ~14 ms (GPU) / ~150 ms (CPU). Runs on consumer-grade hardware.
-3. **Prompt-Driven, Not Prior-Driven:** The model follows the user's annotation intent rather than imposing memorized anatomical priors. This makes it robust to out-of-distribution data: e.g. an MRI-only variant retains accuracy on CT, and a head-only variant segments body anatomy.
+1. **Client-Side Inference:** The model's low resource footprint makes client-side execution feasible, as demonstrated by a browser-based research prototype. Medical data stays on the local machine during inference — no server round-trips, no cloud dependency.
+2. **Fast & Low Hardware Requirements:** Peak GPU memory of 164–780 MB, per-slice latency of ~14 ms (GPU) / ~150 ms (CPU).
+3. **Prompt-Conditioned, Not Prior-Driven:** LISP-Net appears to show closer alignment with the user's annotation intent rather than defaulting to learned anatomical priors. On the tested domain shifts, this translates to strong out-of-distribution generalization: e.g. an MRI-only variant retains accuracy on CT, and a head-only variant segments body anatomy.
 
 ### Watch the Demo or Try it Yourself
 - **YouTube Demo:** [Watch our demo video](https://youtu.be/SafGK6U0nDI)
@@ -51,14 +51,14 @@ mask = predictor.predict(query_image, prompt)           # any resolution — til
 
 ## 💡 Core Innovation & Features
 
-LISP-Net is a **purely convolutional framework** for interactive volumetric segmentation. Instead of sparse clicks, it conditions on a single dense 2D anchor prompt and propagates the annotation intent through within-volume visual correspondence rather than memorized anatomical priors. In 2D benchmarks it outperforms UniverSeg by 23.73% at mid-range offsets; in 3D it exceeds nnInteractive by 9.63% in volumetric Dice under simulated (oracle) interactive refinement, with further advantages on out-of-distribution data.
+LISP-Net is a **purely convolutional framework** for interactive volumetric segmentation. Instead of sparse clicks, it conditions on a single dense 2D anchor prompt and propagates the annotation through within-volume visual correspondence, showing closer alignment with the user's intent than prior-driven approaches. In 2D benchmarks, LISP-Net's one-shot prompt-conditioning achieves 23.73\% higher Dice than UniverSeg's 16-shot support set at mid-range offsets — a design trade-off between spatial proximity (LISP-Net) and offset-invariant batch processing (UniverSeg). In 3D, nnInteractive leads in the single-prompt setting (volumetric Dice 0.680 vs.\ 0.660), while LISP-Net surpasses it by 9.63\% under simulated (oracle) interactive refinement (0.877 vs.\ 0.800). On the tested out-of-distribution shifts, LISP-Net's prompt-conditioned design generalizes to unseen modalities and anatomies without retraining.
 
 **Key Contributions:**
 - **Asymmetrical Dual-Encoder:** A heavy Prompt Encoder extracts structural semantics from a dense 2D prompt (reference image + full mask). Multi-resolution SE channel-attention fuses these features into the Query Encoder at each stage.
 - **Efficient & Lightweight:** ~28M parameters, adaptive tiling, peak GPU memory of 164–780 MB, per-slice latency of ~14 ms (GPU) / ~150 ms (CPU). ONNX export enables browser-based inference for research demos.
 - **Self-monitoring Slice Feedback (SSF):** Automatically detects structural drift during 3D propagation via confidence monitoring and refreshes the prompt context without ground-truth annotations.
 - **Oracle Interactive Feedback (Oracle IFL):** A clinician corrects a missegmented slice; it becomes a fresh dense prompt to update all subsequent predictions. The oracle protocol uses ground-truth masks as corrections, establishing an upper bound on interactive performance.
-- **Out-of-Distribution Robustness:** An MRI-only variant retains accuracy on CT; a head-only variant segments body anatomy. The model follows the prompt, not the training prior.
+- **Prompt-Conditioned Generalization:** On the tested domain shifts (cross-modality MRI/CT, cross-anatomy head/body, cross-species mouse micro-CT, and novel annotation granularity), LISP-Net's predictions align more closely with the prompt's content than with learned anatomical priors — an interpretation consistent with the results but not conclusively proven.
 
 <br>
 <img src="docs/p_unet_architecture.png" style="width: 100%;" alt="LISP-Net Architecture">
