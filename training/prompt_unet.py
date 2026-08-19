@@ -21,7 +21,7 @@ Changes over v312:
   v311 vs v313 isolates: does float32 (vs float16) matter when SE is present?
 
 Filter schedule and all other hyper-parameters are unchanged from v310–312:
-  Default: [48, 96, 192, 256, 384]  (~15 M trainable params)
+  Default: [48, 96, 192, 256, 384]  (~28 M trainable params)
   Scale augmentation + leakage fix (crop origin from support label only).
   Mixed precision: DISABLED — pure float32 throughout.
 """
@@ -45,7 +45,7 @@ class PromptUNet:
         Suggested presets
         -----------------
         [32, 64,  96, 128, 192]  →  ~5 M params   (lighter)
-        [48, 96, 192, 256, 384]  →  ~15 M params  (default, matches v310–312)
+        [48, 96, 192, 256, 384]  →  ~28 M params  (default, matches v310–312)
         [64, 128, 256, 512, 512] →  ~45 M params  (matches v21)
     """
 

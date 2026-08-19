@@ -533,21 +533,21 @@ def run_benchmark(
     npz_paths: List[str],
     p_unet_model: str,
     nn_model_dir: Optional[str] = None,
-    runs_per_vol: int = 5,
+    runs_per_vol: int = 4,
     modes: Union[str, List[str]] = "ifl",
     modality: Optional[str] = None,
     output_threshold: float = 0.5,
     ssf_strategy: Optional[BaseSSFStrategy] = ConfidenceDropStrategy(drop_fraction=0.10),
     buffer_size: int = 2,
     gt_dice_threshold: float = 0.65,
-    window: int = 10,
+    window: int = 12,
     max_volumes: Optional[int] = None,
     return_predictions: bool = False,
     output_dir: Optional[str] = None,
     nn_device: Optional[str] = None,
     verbose: bool = True,
     debug: bool = False,
-    batch_size: int = 3,
+    batch_size: int = 6,
     seed: int = 42,
 ) -> List[dict]:
     """
@@ -1007,7 +1007,7 @@ if __name__ == "__main__":
     ap.add_argument("--npz_paths",      nargs="+", required=True)
     ap.add_argument("--p_unet_model",   required=True)
     ap.add_argument("--nn_model_dir",   default=None)
-    ap.add_argument("--runs_per_vol",   type=int,   default=5)
+    ap.add_argument("--runs_per_vol",   type=int,   default=4)
     ap.add_argument(
         "--modes", nargs="+", default=["ifl_ssf"],
         help="Mode strings: 'ssf', 'none', 'ifl', 'ifl_ssf'.  Example: --modes ssf none ifl_ssf",
@@ -1021,13 +1021,13 @@ if __name__ == "__main__":
     ap.add_argument("--ssf_threshold",      type=float, default=0.10)
     ap.add_argument("--buffer_size",        type=int,   default=2)
     ap.add_argument("--gt_dice_threshold",  type=float, default=0.65)
-    ap.add_argument("--batch_size",         type=int,   default=3)
+    ap.add_argument("--batch_size",         type=int,   default=6)
     ap.add_argument("--max_volumes",        type=int,   default=None,
                     help="Cap on total evaluated volumes (random subset).")
     ap.add_argument("--debug",              action="store_true",  default=False,
                     help="Print per-volume correction indices and all Dice scores")
     ap.add_argument("--seed",               type=int,   default=42)
-    ap.add_argument("--window",             type=int,   default=10)
+    ap.add_argument("--window",             type=int,   default=12)
     ap.add_argument("--output_dir",         default="evaluation/benchmark_nninteractive/results")
     ap.add_argument("--nn_device",          default="cuda:0")
     args = ap.parse_args()

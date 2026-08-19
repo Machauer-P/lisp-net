@@ -233,12 +233,12 @@ class VolumeInference:
         SSF trigger strategy.  ``None`` disables SSF.
     buffer_size : int
         Number of recent predictions kept in the SSF rolling buffer.
-        Default 6.
+        Default 2.
     batch_size : int
         Number of slices predicted per GPU forward pass.  Slices within a
         batch all use the same prompt; if SSF or IFL fires mid-batch, slices
         after the trigger are rolled back and re-predicted with the updated
-        prompt.  Default 3.
+        prompt.  Default 6.
     """
 
     def __init__(

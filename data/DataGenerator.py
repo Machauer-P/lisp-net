@@ -24,14 +24,17 @@ class DataGenerator:
     Generates (image, label, prompt, modality) tuples from a DataLoader.
 
     RAM Management Note:
-    The DataGenerator evaluates CPU-intensive float32 scaling operations (Z-score, UniverSeg) 
-    per patient and permanently caches the results in `_norm_cache` and `_universeg_cache`. 
-    These caches persist indefinitely across your entire program execution to preserve sampling speed 
-    across multiple generator loops. 
-    CONSEQUENCE: If you run through a massive dataset, these duplicate `float32` arrays will stack 
-    in RAM alongside your existing DataLoader raw arrays! If your memory is maxing out, you can 
-    manually call `gen._norm_cache.clear()` and `gen._universeg_cache.clear()` sequentially in 
-    your pipeline to release memory. Note that doing so forces any future samples from those patients 
+    The DataGenerator evaluates CPU-intensive float32 scaling operations (Z-score, UniverSeg)
+    per patient and caches the results in `_norm_cache` and `_universeg_cache` (plus
+    `_slice_index_cache` for slice indexing).  These caches are scoped to a single data-point
+    collection call: `_collect_data_points` clears all three caches at the start of every call,
+    so cached arrays are released once one buffer has been built.  The single-task collector
+    `get_data_points_from_one_task_numpy` is the one exception; it deliberately keeps its caches,
+    because the underlying data is static across calls and the cached results remain valid.
+    CONSEQUENCE: Within one collection call, these duplicate `float32` arrays stack
+    in RAM alongside your existing DataLoader raw arrays! If your memory is maxing out, you can
+    manually call `gen._norm_cache.clear()` and `gen._universeg_cache.clear()` sequentially in
+    your pipeline to release memory. Note that doing so forces any future samples from those patients
     to be re-scaled and re-evaluated, which will slow training down.
 
     Parameters
